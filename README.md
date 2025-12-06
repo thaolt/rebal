@@ -21,7 +21,31 @@ Notes:
  * I do not write this, it is all ChatGPT generated. Use it as long as you like
  and as your own risk.
 
-### WASM Usage example
+### C usage example
+
+```c
+#include "sarena.h"
+
+int main(void) {
+    /* small buffer for testing */
+    static uint8_t buffer[2048];
+
+    int rc = sarena_init(buffer, sizeof(buffer));
+    if (rc != 0) {
+        printf("allocator_init failed: %d\n", rc);
+        return 1;
+    }
+
+    sarena_t *A = (sarena_t *)buffer;
+
+    printf("Allocator initialized: capacity=%u free_root=%u first_block=%u\n",
+           A->capacity, (unsigned)A->free_root, (unsigned)A->first_block);
+
+    void *p1 = sarena_alloc(A, 64);
+    // ...
+```
+
+### WASM usage example
 
 ```c
 #include "sarena.h"
