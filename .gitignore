@@ -1,1 +1,4 @@
 build/
+.qtcreator/
+*.pro.user
+CMakeLists.txt.user
