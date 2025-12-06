@@ -20,17 +20,17 @@ int main(void) {
     dump_physical(A);
     dump_free_tree(A);
 
-    void *p1 = sarena__alloc(A, 64);
+    void *p1 = sarena_alloc(A, 64);
     printf("\nAllocated p1 (64): %p\n", p1);
     dump_physical(A);
     dump_free_tree(A);
 
-    void *p2 = sarena__alloc(A, 120);
+    void *p2 = sarena_alloc(A, 120);
     printf("\nAllocated p2 (120): %p\n", p2);
     dump_physical(A);
     dump_free_tree(A);
 
-    void *p3 = sarena__alloc(A, 40);
+    void *p3 = sarena_alloc(A, 40);
     printf("\nAllocated p3 (40): %p\n", p3);
     dump_physical(A);
     dump_free_tree(A);
@@ -51,7 +51,7 @@ int main(void) {
     dump_free_tree(A);
 
     /* allocate again to see reuse */
-    void *p4 = sarena__alloc(A, 200);
+    void *p4 = sarena_alloc(A, 200);
     printf("\nAllocated p4 (200): %p\n", p4);
     dump_physical(A);
     dump_free_tree(A);

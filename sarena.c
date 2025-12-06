@@ -45,7 +45,7 @@ int sarena_init(void *buffer, size_t buffer_size) {
     sarena_t *a = alloc_from_buf(buffer);
     zero_bytes(a, sizeof(sarena_t));
 
-    a->magic = ALLOC_MAGIC;
+    a->magic = SARENA_MAGIC;
     a->capacity = (uint32_t)buffer_size;
     a->free_root = 0;
     a->first_block = 0;
@@ -53,7 +53,7 @@ int sarena_init(void *buffer, size_t buffer_size) {
     uintptr_t base = (uintptr_t)buffer;
     uintptr_t block_start = base + sizeof(sarena_t);
     size_t offset_into_buf = (size_t)(block_start - base);
-    size_t aligned_offset = (size_t)align_up(offset_into_buf, ALLOC_MIN_ALIGN);
+    size_t aligned_offset = (size_t)align_up(offset_into_buf, SARENA_MIN_ALIGN);
     block_start = base + aligned_offset;
 
     if ((uintptr_t)buffer + buffer_size <= block_start + sizeof(block_header_t)) {
@@ -402,7 +402,7 @@ static block_header_t *rb_find_best(sarena_t *a, size_t size) {
  * NOTE: needed must include header size and alignment (i.e., the block's total size requested).
  */
 static block_header_t *split_block(sarena_t *a, block_header_t *b, size_t needed) {
-    if (b->size < needed + sizeof(block_header_t) + ALLOC_MIN_ALIGN) {
+    if (b->size < needed + sizeof(block_header_t) + SARENA_MIN_ALIGN) {
         /* Not enough space to create a new free block */
         return b;
     }
@@ -461,11 +461,11 @@ static block_header_t *coalesce(sarena_t *a, block_header_t *b) {
 
 /* -------------------- Allocation / Free API -------------------- */
 
-/* sarena__alloc: allocate payload of 'size' bytes from allocator 'a' */
-void *sarena__alloc(sarena_t *a, size_t size) {
+/* sarena_alloc: allocate payload of 'size' bytes from allocator 'a' */
+void *sarena_alloc(sarena_t *a, size_t size) {
     if (!a || size == 0) return NULL;
 
-    size_t needed = align_up(size + sizeof(block_header_t), ALLOC_MIN_ALIGN);
+    size_t needed = align_up(size + sizeof(block_header_t), SARENA_MIN_ALIGN);
 
     block_header_t *b = rb_find_best(a, needed);
     if (!b) return NULL;

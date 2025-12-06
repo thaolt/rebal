@@ -10,8 +10,8 @@ extern "C" {
 
 /* -------------------- Config / Types -------------------- */
 
-#define ALLOC_MAGIC 0xC0FEBABE
-#define ALLOC_MIN_ALIGN 8u
+#define SARENA_MAGIC 0xC0FEBABE
+#define SARENA_MIN_ALIGN 8u
 
 typedef uint32_t offset_t; /* change to uint64_t for >4GB buffers */
 
@@ -46,7 +46,7 @@ struct sarena {
 /* -------------------- Public API -------------------- */
 
 int sarena_init(void *buffer, size_t buffer_size);
-void *sarena__alloc(sarena_t *a, size_t size);
+void *sarena_alloc(sarena_t *a, size_t size);
 void sarena_free(sarena_t *a, void *ptr);
 
 #ifdef SARENA_DEBUG
