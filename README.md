@@ -24,6 +24,7 @@ Notes:
 ### C usage example
 
 ```c
+#include <stdio.h>
 #include "sarena.h"
 
 int main(void) {
