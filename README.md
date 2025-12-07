@@ -11,7 +11,7 @@ Features:
  * Coalescing on free
  * Red-Black tree for free blocks to guarantee O(log n) search/inserts/removes
  * Memory backed by a user-provided buffer (no real heap needed).
- * No libc dependent.
+ * No libc dependant.
 
 Limits:
  * Not thread-safe, use different a arena per thread if needed
