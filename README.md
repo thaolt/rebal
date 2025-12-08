@@ -20,6 +20,31 @@ Notes:
  * Offsets are 32-bit; change 'offset_t' to uint64_t if buffer > 4GB.
  * This implementation was generated with the assistance of AI. Use it at your own risk.
 
+### C usage example
+
+```c
+#include <stdio.h>
+#include "sarena.h"
+
+int main(void) {
+    /* small buffer for testing */
+    static uint8_t buffer[2048];
+
+    int rc = sarena_init(buffer, sizeof(buffer));
+    if (rc != 0) {
+        printf("allocator_init failed: %d\n", rc);
+        return 1;
+    }
+
+    sarena_t *A = (sarena_t *)buffer;
+
+    printf("Allocator initialized: capacity=%u free_root=%u first_block=%u\n",
+           A->capacity, (unsigned)A->free_root, (unsigned)A->first_block);
+
+    void *p1 = sarena_alloc(A, 64);
+    // ...
+```
+
 ### WASM Usage example
 
 ```c
