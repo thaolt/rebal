@@ -1,7 +1,7 @@
 sarena
 ===
 
-Simple arena allocator with Red-Black balanced free tree. I use it mainly in my WASM modules.
+A simple arena allocator with a Red-Black balanced free tree. Primarily designed for use in WebAssembly (WASM) modules.
 
 Features:
  * No external heap allocation inside allocator
@@ -11,42 +11,16 @@ Features:
  * Coalescing on free
  * Red-Black tree for free blocks to guarantee O(log n) search/inserts/removes
  * Memory backed by a user-provided buffer (no real heap needed).
- * No libc dependant.
+ * No libc dependent.
 
 Limits:
- * Not thread-safe, use different a arena per thread if needed
+ * Not thread-safe; use a separate arena per thread if needed
 
 Notes:
  * Offsets are 32-bit; change 'offset_t' to uint64_t if buffer > 4GB.
- * I do not write this, it is all ChatGPT generated. Use it as long as you like
- and as your own risk.
+ * This implementation was generated with the assistance of AI. Use it at your own risk.
 
-### C usage example
-
-```c
-#include <stdio.h>
-#include "sarena.h"
-
-int main(void) {
-    /* small buffer for testing */
-    static uint8_t buffer[2048];
-
-    int rc = sarena_init(buffer, sizeof(buffer));
-    if (rc != 0) {
-        printf("allocator_init failed: %d\n", rc);
-        return 1;
-    }
-
-    sarena_t *A = (sarena_t *)buffer;
-
-    printf("Allocator initialized: capacity=%u free_root=%u first_block=%u\n",
-           A->capacity, (unsigned)A->free_root, (unsigned)A->first_block);
-
-    void *p1 = sarena_alloc(A, 64);
-    // ...
-```
-
-### WASM usage example
+### WASM Usage example
 
 ```c
 #include "sarena.h"
