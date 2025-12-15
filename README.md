@@ -27,7 +27,7 @@ Initially, I asked Copilot to generate a simple arena allocator for my WASM modu
 
 While researching how to build WASM modules in C, I came across the [VMIR WASM Runtime](https://github.com/andoma/vmir) repository. Its `tlsf` module looks very similar to the code produced by Copilot.
 
-The `tlsf` (*Two-Level Segregated Fit*) memory allocator included in VMIR is, in turn, a public-domain implementation originating from [http://tlsf.baisoku.org](http://tlsf.baisoku.org), based on the documentation at [http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml](http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml).
+The `tlsf` (*Two-Level Segregated Fit*) memory allocator included in VMIR is, in turn, a public-domain implementation originating from [http://tlsf.baisoku.org](https://web.archive.org/web/20160322014215/https://tlsf.baisoku.org/), based on the documentation at [http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml](https://web.archive.org/web/20070629065219/http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml).
 
 I therefore want to give credit where credit is due. Some of the external links may no longer be available; access via the Wayback Machine may be required.
 
