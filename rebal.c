@@ -500,6 +500,155 @@ void rebal_free(rebal_t *a, void *ptr) {
     rb_insert(a, nb);
 }
 
+/* Simple memcpy implementation for WASM */
+static void *rebal_memcpy(void *dest, const void *src, size_t n) {
+    char *d = (char *)dest;
+    const char *s = (const char *)src;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+}
+
+/**
+ * Reallocate memory to a new size.
+ * If ptr is NULL, equivalent to rebal_alloc(a, size).
+ * If size is 0, equivalent to rebal_free(a, ptr) and returns NULL.
+ * If the allocation fails, the original block is left unchanged.
+ */
+void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
+    /* Handle special cases */
+    if (!ptr) {
+        return rebal_alloc(a, size);
+    }
+    if (size == 0) {
+        rebal_free(a, ptr);
+        return NULL;
+    }
+    if (!a) {
+        return NULL;
+    }
+
+    /* Get the block header */
+    rebal_block_header_t *b = (rebal_block_header_t *)((uintptr_t)ptr - sizeof(rebal_block_header_t));
+    if (b->is_free) {
+        return NULL; /* Block is already free */
+    }
+
+    size_t old_size = b->size - sizeof(rebal_block_header_t);
+    size_t new_size = align_up(size + sizeof(rebal_block_header_t), REBAL_MIN_ALIGN) - sizeof(rebal_block_header_t);
+
+    /* If the size is the same, return the original pointer */
+    if (old_size == size) {
+        return ptr;
+    }
+
+    /* If shrinking the block */
+    if (size < old_size) {
+        /* Calculate the size of the new block and potential split */
+        size_t new_block_size = new_size + sizeof(rebal_block_header_t);
+        size_t remaining = b->size - new_block_size;
+
+        /* Only split if we can create a new free block with minimum size */
+        if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
+            /* Create a new free block after the resized block */
+            rebal_block_header_t *new_free = (rebal_block_header_t *)((uintptr_t)b + new_block_size);
+            zero_bytes(new_free, sizeof(rebal_block_header_t));
+            
+            /* Set up the new free block */
+            new_free->size = (uint32_t)remaining;
+            new_free->is_free = 1;
+            new_free->prev_phys_off = off_of(a, b);
+            new_free->next_phys_off = b->next_phys_off;
+            
+            /* Update the original block's size and next pointer */
+            b->size = (uint32_t)new_block_size;
+            b->next_phys_off = off_of(a, new_free);
+            
+            /* Update the next block's previous pointer */
+            if (new_free->next_phys_off) {
+                hdr(a, new_free->next_phys_off)->prev_phys_off = off_of(a, new_free);
+            }
+            
+            /* Insert the new free block into the free tree */
+            rb_insert(a, new_free);
+            
+            /* Try to coalesce the new free block with its neighbors */
+            coalesce(a, new_free);
+        }
+        
+        return ptr;
+    }
+
+    /* If we get here, we need to grow the block */
+    
+    /* Check if the next block is free and large enough */
+    if (b->next_phys_off) {
+        rebal_block_header_t *next = hdr(a, b->next_phys_off);
+        size_t needed = new_size - old_size;
+        
+        if (next->is_free && (next->size >= needed)) {
+            /* Remove next from free tree */
+            rb_delete(a, next);
+            
+            /* Calculate new size if we take what we need from next */
+            size_t remaining = next->size - needed;
+            
+            if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
+                /* Split the next block */
+                rebal_block_header_t *new_next = (rebal_block_header_t *)((uintptr_t)next + needed);
+                zero_bytes(new_next, sizeof(rebal_block_header_t));
+                
+                new_next->size = (uint32_t)remaining;
+                new_next->is_free = 1;
+                new_next->prev_phys_off = off_of(a, b);
+                new_next->next_phys_off = next->next_phys_off;
+                
+                /* Update the original block's size and next pointer */
+                b->size += (uint32_t)needed;
+                b->next_phys_off = off_of(a, new_next);
+                
+                /* Update the next block's previous pointer */
+                if (new_next->next_phys_off) {
+                    hdr(a, new_next->next_phys_off)->prev_phys_off = off_of(a, new_next);
+                }
+                
+                /* Insert the new free block into the free tree */
+                rb_insert(a, new_next);
+                
+                /* Try to coalesce the new free block with its neighbors */
+                coalesce(a, new_next);
+            } else {
+                /* Take the whole next block */
+                b->size += next->size;
+                b->next_phys_off = next->next_phys_off;
+                
+                /* Update the next block's previous pointer */
+                if (next->next_phys_off) {
+                    hdr(a, next->next_phys_off)->prev_phys_off = off_of(a, b);
+                }
+            }
+            
+            return ptr;
+        }
+    }
+    
+    /* If we can't expand in place, allocate a new block and copy the data */
+    void *new_ptr = rebal_alloc(a, size);
+    if (!new_ptr) {
+        return NULL;
+    }
+    
+    /* Copy the data from the old block to the new one */
+    size_t copy_size = (old_size < size) ? old_size : size;
+    rebal_memcpy(new_ptr, ptr, copy_size);
+    
+    /* Free the old block */
+    rebal_free(a, ptr);
+    
+    return new_ptr;
+}
+
 
 /* -------------------- Debug / Dump Helpers -------------------- */
 

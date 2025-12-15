@@ -48,6 +48,7 @@ struct rebal {
 int rebal_init(void *buffer, size_t buffer_size);
 void *rebal_alloc(rebal_t *a, size_t size);
 void rebal_free(rebal_t *a, void *ptr);
+void *rebal_realloc(rebal_t *a, void *ptr, size_t size);
 
 #ifdef REBAL_DEBUG
 #include <stdio.h>
