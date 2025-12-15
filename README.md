@@ -1,7 +1,7 @@
-sarena
+rebal: Red-black allocator
 ===
 
-A simple arena allocator with a Red-Black balanced free tree. Primarily designed for use in WebAssembly (WASM) modules.
+A simple allocator with a Red-Black balanced free tree. Primarily designed for use in WebAssembly (WASM) modules.
 
 Features:
  * No external heap allocation inside allocator
@@ -18,7 +18,20 @@ Limits:
 
 Notes:
  * Offsets are 32-bit; change 'offset_t' to uint64_t if buffer > 4GB.
- * This implementation was generated with the assistance of AI. Use it at your own risk.
+
+## Origin story
+
+This implementation was generated with the assistance of Github Copilot (GPT 5.1 model). Use it at your own risk.
+
+Initially, I asked Copilot to generate a simple arena allocator for my WASM modules. I did not know the original source of the generated code, but it worked well for my use cases.
+
+While researching how to build WASM modules in C, I came across the [VMIR WASM Runtime](https://github.com/andoma/vmir) repository. Its `tlsf` module looks very similar to the code produced by Copilot.
+
+The `tlsf` (*Two-Level Segregated Fit*) memory allocator included in VMIR is, in turn, a public-domain implementation originating from [http://tlsf.baisoku.org](http://tlsf.baisoku.org), based on the documentation at [http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml](http://rtportal.upv.es/rtmalloc/allocators/tlsf/index.shtml).
+
+I therefore want to give credit where credit is due. Some of the external links may no longer be available; access via the Wayback Machine may be required.
+
+## Examples
 
 ### C usage example
 
