@@ -37,48 +37,48 @@ Although, the `rebal` allocator is a bit different from `tlsf` allocator now. I 
 
 ```c
 #include <stdio.h>
-#include "sarena.h"
+#include "rebal.h"
 
 int main(void) {
     /* small buffer for testing */
     static uint8_t buffer[2048];
 
-    int rc = sarena_init(buffer, sizeof(buffer));
+    int rc = rebal_init(buffer, sizeof(buffer));
     if (rc != 0) {
         printf("allocator_init failed: %d\n", rc);
         return 1;
     }
 
-    sarena_t *A = (sarena_t *)buffer;
+    rebal_t *A = (rebal_t *)buffer;
 
     printf("Allocator initialized: capacity=%u free_root=%u first_block=%u\n",
            A->capacity, (unsigned)A->free_root, (unsigned)A->first_block);
 
-    void *p1 = sarena_alloc(A, 64);
+    void *p1 = rebal_alloc(A, 64);
     // ...
 ```
 
 ### WASM Usage example
 
 ```c
-#include "sarena.h"
+#include "rebal.h"
 
-static sarena_t *_arena = NULL;
+static rebal_t *_default_arena = NULL;
 
 void vltd_minit(uintptr_t base, uint32_t mem_sz) {
-    int rc = sarena_init((void*) base, mem_sz - base);
-    _arena = (sarena_t *) base;
+    int rc = rebal_init((void*) base, mem_sz - base);
+    _default_arena = (rebal_t *) base;
 }
 void *vltd_malloc(uint32_t size) {
-    return sarena_alloc(_arena, size);
+    return rebal_alloc(_default_arena, size);
 }
 void *vltd_calloc(uint32_t nmemb, uint32_t size) {
-    void *ptr = sarena_alloc(_arena, nmemb * size);
+    void *ptr = rebal_alloc(_default_arena, nmemb * size);
     _vltdr_zero(ptr, nmemb * size);
     return ptr;
 }
 void vltd_free(void *data){
-    sarena_free(_arena, data);
+    rebal_free(_default_arena, data);
 }
 ```
 
@@ -100,7 +100,7 @@ clang --target=wasm32 \
     -Wl,--lto-O3 \
     -Wl,-O3 \
     -o libvltd.wasm \
-    -Os -fvisibility=hidden (...) sarena.c
+    -Os -fvisibility=hidden (...) rebal.c
 ```
 
 Use it in JS:
