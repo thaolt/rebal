@@ -64,7 +64,8 @@ void dump_free_tree(rebal_t *a);
 #endif // REBAL_DEBUG
 
 #ifdef __cplusplus
-}
+} // end extern C
 #endif
+
 
 #endif // REBAL_H

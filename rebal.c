@@ -2,9 +2,39 @@
 
 /* -------------------- Helpers (no libc) -------------------- */
 
-static void zero_bytes(void *p, size_t n) {
-    uint8_t *b = (uint8_t *)p;
-    for (size_t i = 0; i < n; ++i) b[i] = 0;
+
+void *rebal_memset(void *dst, int v, size_t n) {
+#ifdef BUILDING_WASM
+    return __builtin_memset(dst, v, n);
+#else
+    unsigned char *p = dst;
+    while (n--) *p++ = (unsigned char)v;
+    return dst;
+#endif
+}
+
+void *rebal_memcpy(void *dest, const void *src, size_t n) {
+#ifdef BUILDING_WASM
+    return __builtin_memcpy(dest, src, n);
+#else
+    char *d = (char *)dest;
+    const char *s = (const char *)src;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+    return dest;
+#endif
+}
+
+
+__attribute__((used))
+void *memset(void *dst, int v, size_t n) {
+    return rebal_memset(dst, v, n);
+}
+
+__attribute__((used))
+void *memcpy(void *dest, const void *src, size_t n) {
+    return rebal_memcpy(dest, src, n);
 }
 
 static size_t align_up(size_t x, size_t a) {
@@ -15,6 +45,7 @@ static size_t align_up(size_t x, size_t a) {
 static inline rebal_t *alloc_from_buf(void *buf) {
     return (rebal_t *)buf;
 }
+
 static inline void *ptr_from_off(void *base, rebal_offset_t off) {
     if (off == 0) return NULL;
     return (void *)((uintptr_t)base + (uintptr_t)off);
@@ -44,7 +75,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     if (buffer_size < MIN_OVERHEAD) return -2;
 
     rebal_t *a = alloc_from_buf(buffer);
-    zero_bytes(a, sizeof(rebal_t));
+    rebal_memset(a, 0, sizeof(rebal_t));
 
     a->magic = REBAL_MAGIC;
     a->capacity = (uint32_t)buffer_size;
@@ -62,7 +93,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     }
 
     rebal_block_header_t *b = (rebal_block_header_t *)block_start;
-    zero_bytes((void *)b, sizeof(rebal_block_header_t));
+    rebal_memset((void *)b, 0, sizeof(rebal_block_header_t));
 
     uint32_t block_total_size = (uint32_t)(((uintptr_t)buffer + buffer_size) - block_start);
     b->size = block_total_size;
@@ -413,7 +444,7 @@ static rebal_block_header_t *split_block(rebal_t *a, rebal_block_header_t *b, si
 
     /* new block starts after b */
     rebal_block_header_t *nb = (rebal_block_header_t *)((uintptr_t)b + (uintptr_t)needed);
-    zero_bytes(nb, sizeof(rebal_block_header_t));
+    rebal_memset(nb, 0, sizeof(rebal_block_header_t));
     nb->size = remaining;
     nb->is_free = 1;
     nb->color = REBAL_BLACK; /* default; will be inserted into RB which sets color */
@@ -500,16 +531,6 @@ void rebal_free(rebal_t *a, void *ptr) {
     rb_insert(a, nb);
 }
 
-/* Simple memcpy implementation for WASM */
-static void *rebal_memcpy(void *dest, const void *src, size_t n) {
-    char *d = (char *)dest;
-    const char *s = (const char *)src;
-    for (size_t i = 0; i < n; i++) {
-        d[i] = s[i];
-    }
-    return dest;
-}
-
 /**
  * Reallocate memory to a new size.
  * If ptr is NULL, equivalent to rebal_alloc(a, size).
@@ -553,7 +574,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
         if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
             /* Create a new free block after the resized block */
             rebal_block_header_t *new_free = (rebal_block_header_t *)((uintptr_t)b + new_block_size);
-            zero_bytes(new_free, sizeof(rebal_block_header_t));
+            rebal_memset(new_free, 0, sizeof(rebal_block_header_t));
             
             /* Set up the new free block */
             new_free->size = (uint32_t)remaining;
@@ -597,7 +618,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
                 /* Split the next block */
                 rebal_block_header_t *new_next = (rebal_block_header_t *)((uintptr_t)next + needed);
-                zero_bytes(new_next, sizeof(rebal_block_header_t));
+                rebal_memset(new_next, 0, sizeof(rebal_block_header_t));
                 
                 new_next->size = (uint32_t)remaining;
                 new_next->is_free = 1;
