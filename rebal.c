@@ -94,7 +94,6 @@ static inline rebal_offset_t off_of(rebal_t *a, rebal_block_header_t *b) {
 static int validate_allocator(rebal_t *a) {
     if (!a) return REBAL_ERROR_NULL_BUFFER;
     if (a->magic != REBAL_MAGIC) return REBAL_ERROR_CORRUPTED;
-    if (a->canary != REBAL_CANARY) return REBAL_ERROR_CORRUPTED;
     return REBAL_SUCCESS;
 }
 
@@ -110,11 +109,6 @@ static int validate_block(rebal_t *a, rebal_block_header_t *b) {
     
     if (block_addr < base || block_addr >= base + a->capacity) {
         return REBAL_ERROR_INVALID_POINTER;
-    }
-    
-    /* Check canary */
-    if (b->canary != REBAL_CANARY) {
-        return REBAL_ERROR_CORRUPTED;
     }
     
     /* Check size is reasonable */
@@ -136,13 +130,11 @@ int rebal_init(void *buffer, size_t buffer_size) {
     a->capacity = (uint32_t)buffer_size;
     a->free_root = 0;
     a->first_block = 0;
-    a->canary = REBAL_CANARY;
 
     uintptr_t base = (uintptr_t)buffer;
     uintptr_t block_start = base + sizeof(rebal_t);
-    size_t offset_into_buf = (size_t)(block_start - base);
-    size_t aligned_offset = (size_t)align_up(offset_into_buf, REBAL_MIN_ALIGN);
-    block_start = base + aligned_offset;
+    /* Align block start to REBAL_MIN_ALIGN */
+    block_start = (uintptr_t)align_up(block_start, REBAL_MIN_ALIGN);
 
     if ((uintptr_t)buffer + buffer_size <= block_start + sizeof(rebal_block_header_t)) {
         return REBAL_ERROR_INVALID_ALIGNMENT;
@@ -158,8 +150,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     b->left_off = b->right_off = b->parent_off = 0;
     b->prev_phys_off = 0;
     b->next_phys_off = 0;
-    b->canary = REBAL_CANARY;
-    rebal_memset(b->pad2, 0, sizeof(b->pad2));
+    b->pad2 = 0;
 
     rebal_offset_t boff = (rebal_offset_t)(block_start - base);
     a->first_block = boff;
@@ -323,7 +314,6 @@ static void rb_insert_fixup(rebal_t *a, rebal_block_header_t *node) {
 static void rb_insert(rebal_t *a, rebal_block_header_t *z) {
     z->left_off = z->right_off = z->parent_off = 0;
     z->color = REBAL_RED; /* new node red */
-    z->canary = REBAL_CANARY;
 
     if (a->free_root == 0) {
         /* empty tree */
@@ -532,8 +522,7 @@ static rebal_block_header_t *split_block(rebal_t *a, rebal_block_header_t *b, si
     nb->size = remaining;
     nb->is_free = 1;
     nb->color = REBAL_BLACK; /* default; will be inserted into RB which sets color */
-    nb->canary = REBAL_CANARY;
-    rebal_memset(nb->pad2, 0, sizeof(nb->pad2));
+    nb->pad2 = 0;
 
     /* physical links */
     nb->next_phys_off = b->next_phys_off;
@@ -605,7 +594,6 @@ void *rebal_alloc(rebal_t *a, size_t size) {
     b = split_block(a, b, needed);
 
     b->is_free = 0;
-    b->canary = REBAL_CANARY;
     /* color/children/parent fields are irrelevant for allocated blocks */
 
     /* return pointer to payload (after header) */
@@ -694,8 +682,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             new_free->is_free = 1;
             new_free->prev_phys_off = off_of(a, b);
             new_free->next_phys_off = b->next_phys_off;
-            new_free->canary = REBAL_CANARY;
-            rebal_memset(new_free->pad2, 0, sizeof(new_free->pad2));
+            new_free->pad2 = 0;
             
             /* Update the original block's size and next pointer */
             b->size = (uint32_t)new_block_size;
@@ -739,8 +726,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
                 new_next->is_free = 1;
                 new_next->prev_phys_off = off_of(a, b);
                 new_next->next_phys_off = next->next_phys_off;
-                new_next->canary = REBAL_CANARY;
-                rebal_memset(new_next->pad2, 0, sizeof(new_next->pad2));
+                new_next->pad2 = 0;
                 
                 /* Update the original block's size and next pointer */
                 b->size += (uint32_t)needed;

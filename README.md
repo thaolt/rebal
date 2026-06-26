@@ -12,7 +12,7 @@ Features:
  * Red-Black tree for free blocks to guarantee O(log n) search/inserts/removes
  * Memory backed by a user-provided buffer (no real heap needed).
  * No libc dependent.
- * Memory safety hardening with canary values and corruption detection
+ * Memory safety hardening with bounds checking and corruption detection
  * Comprehensive error reporting with descriptive error codes
  * Overflow protection for size calculations
  * Bounds checking for all memory operations

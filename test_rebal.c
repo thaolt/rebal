@@ -274,13 +274,13 @@ void test_validate_corrupted_allocator(void) {
     TEST_PASS();
 }
 
-void test_validate_corrupted_canary(void) {
-    TEST_START("validate_corrupted_canary");
+void test_validate_corrupted_magic(void) {
+    TEST_START("validate_corrupted_magic");
     rebal_init(test_buffer, sizeof(test_buffer));
     rebal_t *a = (rebal_t *)test_buffer;
     
-    /* Corrupt the canary */
-    a->canary = 0x12345678;
+    /* Corrupt the magic number */
+    a->magic = 0x12345678;
     
     int rc = rebal_validate(a);
     ASSERT_EQ(rc, REBAL_ERROR_CORRUPTED);
@@ -421,7 +421,7 @@ int main(void) {
     
     /* Validation tests */
     test_validate_corrupted_allocator();
-    test_validate_corrupted_canary();
+    test_validate_corrupted_magic();
     
     /* Statistics tests */
     test_get_stats();

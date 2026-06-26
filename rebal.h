@@ -11,7 +11,6 @@ extern "C" {
 /* -------------------- Config / Types -------------------- */
 
 #define REBAL_MAGIC 0xC0FEBABE
-#define REBAL_CANARY 0xDEADBEEF
 #define REBAL_MIN_ALIGN 8u
 #define REBAL_MAX_ALLOC_SIZE ((size_t)(1ULL << 30)) /* 1GB max allocation */
 
@@ -47,9 +46,7 @@ typedef struct rebal_block_header {
 
     rebal_offset_t prev_phys_off; /* previous physical block (0 if none) */
     rebal_offset_t next_phys_off; /* next physical block (0 if none) */
-    
-    uint32_t canary;      /* canary value for corruption detection */
-    uint8_t pad2[4];      /* additional padding to align to 8 bytes */
+    uint32_t pad2;               /* padding to align to 32 bytes total */
 } rebal_block_header_t;
 
 /* Allocator control header at buffer start */
@@ -58,8 +55,6 @@ struct rebal {
     uint32_t capacity;
     rebal_offset_t free_root;   /* root of RB free tree (0 if none) */
     rebal_offset_t first_block; /* offset of first physical block header */
-    uint8_t reserved[2];
-    uint32_t canary;            /* canary for allocator corruption detection */
 };
 
 
