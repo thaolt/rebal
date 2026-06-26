@@ -11,9 +11,25 @@ extern "C" {
 /* -------------------- Config / Types -------------------- */
 
 #define REBAL_MAGIC 0xC0FEBABE
+#define REBAL_CANARY 0xDEADBEEF
 #define REBAL_MIN_ALIGN 8u
+#define REBAL_MAX_ALLOC_SIZE ((size_t)(1ULL << 30)) /* 1GB max allocation */
 
 typedef uint32_t rebal_offset_t; /* change to uint64_t for >4GB buffers */
+
+/* Error codes */
+typedef enum {
+    REBAL_SUCCESS = 0,
+    REBAL_ERROR_NULL_BUFFER = -1,
+    REBAL_ERROR_BUFFER_TOO_SMALL = -2,
+    REBAL_ERROR_INVALID_ALIGNMENT = -3,
+    REBAL_ERROR_CORRUPTED = -4,
+    REBAL_ERROR_INVALID_POINTER = -5,
+    REBAL_ERROR_DOUBLE_FREE = -6,
+    REBAL_ERROR_OUT_OF_MEMORY = -7,
+    REBAL_ERROR_SIZE_TOO_LARGE = -8,
+    REBAL_ERROR_INVALID_STATE = -9
+} rebal_error_t;
 
 /* forward */
 typedef struct rebal rebal_t;
@@ -31,6 +47,9 @@ typedef struct rebal_block_header {
 
     rebal_offset_t prev_phys_off; /* previous physical block (0 if none) */
     rebal_offset_t next_phys_off; /* next physical block (0 if none) */
+    
+    uint32_t canary;      /* canary value for corruption detection */
+    uint8_t pad2[4];      /* additional padding to align to 8 bytes */
 } rebal_block_header_t;
 
 /* Allocator control header at buffer start */
@@ -40,15 +59,61 @@ struct rebal {
     rebal_offset_t free_root;   /* root of RB free tree (0 if none) */
     rebal_offset_t first_block; /* offset of first physical block header */
     uint8_t reserved[2];
+    uint32_t canary;            /* canary for allocator corruption detection */
 };
 
 
 /* -------------------- Public API -------------------- */
 
+/**
+ * Initialize the allocator with a user-provided buffer.
+ * @param buffer Pointer to the buffer to use for allocation
+ * @param buffer_size Size of the buffer in bytes
+ * @return REBAL_SUCCESS on success, error code on failure
+ */
 int rebal_init(void *buffer, size_t buffer_size);
+
+/**
+ * Allocate memory from the allocator.
+ * @param a Pointer to the allocator
+ * @param size Number of bytes to allocate
+ * @return Pointer to allocated memory, or NULL on failure
+ */
 void *rebal_alloc(rebal_t *a, size_t size);
+
+/**
+ * Free previously allocated memory.
+ * @param a Pointer to the allocator
+ * @param ptr Pointer to memory to free
+ */
 void rebal_free(rebal_t *a, void *ptr);
+
+/**
+ * Reallocate memory to a new size.
+ * @param a Pointer to the allocator
+ * @param ptr Pointer to previously allocated memory (or NULL)
+ * @param size New size in bytes
+ * @return Pointer to reallocated memory, or NULL on failure
+ */
 void *rebal_realloc(rebal_t *a, void *ptr, size_t size);
+
+/**
+ * Validate the integrity of the allocator.
+ * @param a Pointer to the allocator
+ * @return REBAL_SUCCESS if valid, error code if corrupted
+ */
+int rebal_validate(rebal_t *a);
+
+/**
+ * Get allocator statistics.
+ * @param a Pointer to the allocator
+ * @param total_free Output parameter for total free bytes
+ * @param total_allocated Output parameter for total allocated bytes
+ * @param free_blocks Output parameter for number of free blocks
+ * @return REBAL_SUCCESS on success, error code on failure
+ */
+int rebal_get_stats(rebal_t *a, size_t *total_free, size_t *total_allocated, 
+                    size_t *free_blocks);
 
 #ifdef REBAL_DEBUG
 #include <stdio.h>

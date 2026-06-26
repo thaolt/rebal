@@ -12,12 +12,21 @@ Features:
  * Red-Black tree for free blocks to guarantee O(log n) search/inserts/removes
  * Memory backed by a user-provided buffer (no real heap needed).
  * No libc dependent.
+ * Memory safety hardening with canary values and corruption detection
+ * Comprehensive error reporting with descriptive error codes
+ * Overflow protection for size calculations
+ * Bounds checking for all memory operations
+ * Validation and statistics APIs
 
 Limits:
  * Not thread-safe; use a separate arena per thread if needed
+ * Maximum single allocation size is 1GB (configurable via REBAL_MAX_ALLOC_SIZE)
 
 Notes:
  * Offsets are 32-bit; change 'offset_t' to uint64_t if buffer > 4GB.
+ * Block headers include canary values for corruption detection
+ * Allocator state can be validated using rebal_validate()
+ * Statistics can be obtained using rebal_get_stats()
 
 ## Origin story
 
@@ -44,7 +53,7 @@ int main(void) {
     static uint8_t buffer[2048];
 
     int rc = rebal_init(buffer, sizeof(buffer));
-    if (rc != 0) {
+    if (rc != REBAL_SUCCESS) {
         printf("allocator_init failed: %d\n", rc);
         return 1;
     }
@@ -55,6 +64,25 @@ int main(void) {
            A->capacity, (unsigned)A->free_root, (unsigned)A->first_block);
 
     void *p1 = rebal_alloc(A, 64);
+    if (!p1) {
+        printf("Allocation failed\n");
+        return 1;
+    }
+    
+    /* Validate allocator state */
+    rc = rebal_validate(A);
+    if (rc != REBAL_SUCCESS) {
+        printf("Allocator validation failed: %d\n", rc);
+        return 1;
+    }
+    
+    /* Get statistics */
+    size_t total_free, total_allocated, free_blocks;
+    rebal_get_stats(A, &total_free, &total_allocated, &free_blocks);
+    printf("Free: %zu bytes, Allocated: %zu bytes, Free blocks: %zu\n",
+           total_free, total_allocated, free_blocks);
+    
+    rebal_free(A, p1);
     // ...
 ```
 
@@ -132,3 +160,45 @@ barcode_view.set(barcode_bytes);
 // Call the wasm function
 const return_length = vltdecode(output_ptr, output_size, barcode_ptr, barcode_bytes.length);
 ```
+
+## Building
+
+### Using CMake
+
+```sh
+mkdir build
+cd build
+cmake ..
+make
+```
+
+This will build:
+- `librebal.a` - Static library
+- `debug_rebal` - Debug executable with visualization
+- `test_rebal` - Comprehensive test suite
+
+### Running Tests
+
+```sh
+cd build
+./test_rebal
+```
+
+### Running Debug Example
+
+```sh
+cd build
+./debug_rebal
+```
+
+## Recent Improvements
+
+The allocator has been significantly improved with:
+
+1. **Memory Safety**: Added bounds checking, overflow protection, and canary values for corruption detection
+2. **Error Handling**: Implemented descriptive error codes and comprehensive validation
+3. **Testing**: Added comprehensive test suite with 24+ tests covering all functionality
+4. **Documentation**: Added detailed function documentation and usage examples
+5. **Build System**: Improved CMake configuration with proper library and test targets
+6. **Robustness**: Enhanced RB tree implementation with better NULL handling and simplified logic
+7. **Statistics**: Added API to query allocator state and memory usage statistics

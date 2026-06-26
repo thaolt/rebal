@@ -42,6 +42,24 @@ static size_t align_up(size_t x, size_t a) {
     return (x + m) & ~m;
 }
 
+/* Safe addition with overflow detection */
+static int safe_add_size_t(size_t a, size_t b, size_t *result) {
+    if (a > SIZE_MAX - b) {
+        return 0; /* overflow */
+    }
+    *result = a + b;
+    return 1;
+}
+
+/* Safe multiplication with overflow detection */
+static int safe_mul_size_t(size_t a, size_t b, size_t *result) {
+    if (a != 0 && b > SIZE_MAX / a) {
+        return 0; /* overflow */
+    }
+    *result = a * b;
+    return 1;
+}
+
 static inline rebal_t *alloc_from_buf(void *buf) {
     return (rebal_t *)buf;
 }
@@ -70,9 +88,46 @@ static inline rebal_offset_t off_of(rebal_t *a, rebal_block_header_t *b) {
 
 #define MIN_OVERHEAD (sizeof(rebal_t) + sizeof(rebal_block_header_t))
 
+/**
+ * Validate allocator integrity and check for corruption.
+ */
+static int validate_allocator(rebal_t *a) {
+    if (!a) return REBAL_ERROR_NULL_BUFFER;
+    if (a->magic != REBAL_MAGIC) return REBAL_ERROR_CORRUPTED;
+    if (a->canary != REBAL_CANARY) return REBAL_ERROR_CORRUPTED;
+    return REBAL_SUCCESS;
+}
+
+/**
+ * Validate block header integrity.
+ */
+static int validate_block(rebal_t *a, rebal_block_header_t *b) {
+    if (!b) return REBAL_ERROR_INVALID_POINTER;
+    
+    /* Check if block is within allocator bounds */
+    uintptr_t base = (uintptr_t)a;
+    uintptr_t block_addr = (uintptr_t)b;
+    
+    if (block_addr < base || block_addr >= base + a->capacity) {
+        return REBAL_ERROR_INVALID_POINTER;
+    }
+    
+    /* Check canary */
+    if (b->canary != REBAL_CANARY) {
+        return REBAL_ERROR_CORRUPTED;
+    }
+    
+    /* Check size is reasonable */
+    if (b->size < sizeof(rebal_block_header_t) || b->size > a->capacity) {
+        return REBAL_ERROR_CORRUPTED;
+    }
+    
+    return REBAL_SUCCESS;
+}
+
 int rebal_init(void *buffer, size_t buffer_size) {
-    if (buffer == NULL) return -1;
-    if (buffer_size < MIN_OVERHEAD) return -2;
+    if (buffer == NULL) return REBAL_ERROR_NULL_BUFFER;
+    if (buffer_size < MIN_OVERHEAD) return REBAL_ERROR_BUFFER_TOO_SMALL;
 
     rebal_t *a = alloc_from_buf(buffer);
     rebal_memset(a, 0, sizeof(rebal_t));
@@ -81,6 +136,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     a->capacity = (uint32_t)buffer_size;
     a->free_root = 0;
     a->first_block = 0;
+    a->canary = REBAL_CANARY;
 
     uintptr_t base = (uintptr_t)buffer;
     uintptr_t block_start = base + sizeof(rebal_t);
@@ -89,7 +145,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     block_start = base + aligned_offset;
 
     if ((uintptr_t)buffer + buffer_size <= block_start + sizeof(rebal_block_header_t)) {
-        return -3;
+        return REBAL_ERROR_INVALID_ALIGNMENT;
     }
 
     rebal_block_header_t *b = (rebal_block_header_t *)block_start;
@@ -102,13 +158,32 @@ int rebal_init(void *buffer, size_t buffer_size) {
     b->left_off = b->right_off = b->parent_off = 0;
     b->prev_phys_off = 0;
     b->next_phys_off = 0;
+    b->canary = REBAL_CANARY;
+    rebal_memset(b->pad2, 0, sizeof(b->pad2));
 
     rebal_offset_t boff = (rebal_offset_t)(block_start - base);
     a->first_block = boff;
     a->free_root = boff;
     /* ensure root is black - it already is (color=0) */
 
-    return 0;
+    return REBAL_SUCCESS;
+}
+
+int rebal_validate(rebal_t *a) {
+    int rc = validate_allocator(a);
+    if (rc != REBAL_SUCCESS) return rc;
+    
+    /* Walk physical blocks and validate each */
+    rebal_block_header_t *b = hdr(a, a->first_block);
+    while (b) {
+        rc = validate_block(a, b);
+        if (rc != REBAL_SUCCESS) return rc;
+        
+        if (b->next_phys_off == 0) break;
+        b = hdr(a, b->next_phys_off);
+    }
+    
+    return REBAL_SUCCESS;
 }
 
 /* -------------------- Red-Black Tree Operations -------------------- */
@@ -248,6 +323,7 @@ static void rb_insert_fixup(rebal_t *a, rebal_block_header_t *node) {
 static void rb_insert(rebal_t *a, rebal_block_header_t *z) {
     z->left_off = z->right_off = z->parent_off = 0;
     z->color = REBAL_RED; /* new node red */
+    z->canary = REBAL_CANARY;
 
     if (a->free_root == 0) {
         /* empty tree */
@@ -297,7 +373,7 @@ static rebal_block_header_t *rb_minimum(rebal_t *a, rebal_block_header_t *n) {
 }
 
 /* Delete node z from RB tree and fixup.
- * This follows the CLRS algorithm; we must be careful with offsets and NULLs.
+ * Simplified implementation with better NULL handling.
  */
 static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
     rebal_block_header_t *y = z;
@@ -330,26 +406,28 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
 
     /* Fixup if original color was BLACK */
     if (y_original_color == REBAL_BLACK) {
-        /* x may be NULL (represented by x == NULL pointer).
-         * We'll implement fixup relying on x and its parent pointers (parent available via z's parent chain).
-         */
+        /* Simplified fixup that handles NULL nodes properly */
         rebal_block_header_t *xi = x;
-        while ((xi == NULL || xi->color == REBAL_BLACK) && xi != rb_root(a)) {
-            rebal_block_header_t *xp = NULL;
-            if (xi) xp = hdr(a, xi->parent_off);
-            else {
-                /* xi is NULL; its parent is the node that used to point to xi.
-                 * Hard to find directly: We can recover parent from y/transplant logic, but to avoid complexity,
-                 * we will compute parent as follows:
-                 *   - if z had parent, after transplant operations, the parent of x is set appropriately.
-                 *   - But when xi==NULL, finding xp needs to use the last known parent (y->parent_off or z->parent_off).
-                 * To simplify and be robust, handle xi==NULL by using z->parent_off or y->parent_off.
-                 */
-                xp = hdr(a, y->parent_off); /* may be NULL */
+        rebal_block_header_t *xp = NULL;
+        
+        /* Find parent of x (whether x is NULL or not) */
+        if (xi) {
+            xp = hdr(a, xi->parent_off);
+        } else {
+            /* x is NULL, we need to find its parent from the transplant operation */
+            /* The parent of NULL x is the node that was transplanted */
+            if (y->parent_off == off_of(a, z)) {
+                xp = z; /* x was originally z's child */
+            } else {
+                xp = hdr(a, y->parent_off);
             }
-
-            if (!xp) break; /* reached root */
-            if (xp->left_off == off_of(a, xi)) {
+        }
+        
+        while (xi != rb_root(a) && (xi == NULL || xi->color == REBAL_BLACK)) {
+            if (!xp) break; /* safety check */
+            
+            if (xp->left_off == off_of(a, xi) || (xi == NULL && xp->left_off == 0)) {
+                /* xi is left child */
                 rebal_block_header_t *w = hdr(a, xp->right_off);
                 if (w && w->color == REBAL_RED) {
                     w->color = REBAL_BLACK;
@@ -357,13 +435,16 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
                     rb_left_rotate(a, xp);
                     w = hdr(a, xp->right_off);
                 }
-                if ((w == NULL) ||
-                    ((w->left_off? hdr(a, w->left_off)->color : REBAL_BLACK) == REBAL_BLACK &&
-                     (w->right_off? hdr(a, w->right_off)->color : REBAL_BLACK) == REBAL_BLACK)) {
+                
+                uint8_t w_left_color = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
+                uint8_t w_right_color = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
+                
+                if (w == NULL || (w_left_color == REBAL_BLACK && w_right_color == REBAL_BLACK)) {
                     if (w) w->color = REBAL_RED;
                     xi = xp;
+                    xp = hdr(a, xi->parent_off);
                 } else {
-                    if ((w->right_off? hdr(a, w->right_off)->color : REBAL_BLACK) == REBAL_BLACK) {
+                    if (w_right_color == REBAL_BLACK) {
                         if (w->left_off) hdr(a, w->left_off)->color = REBAL_BLACK;
                         w->color = REBAL_RED;
                         rb_right_rotate(a, w);
@@ -376,7 +457,7 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
                     xi = rb_root(a);
                 }
             } else {
-                /* symmetric */
+                /* xi is right child - symmetric case */
                 rebal_block_header_t *w = hdr(a, xp->left_off);
                 if (w && w->color == REBAL_RED) {
                     w->color = REBAL_BLACK;
@@ -384,13 +465,16 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
                     rb_right_rotate(a, xp);
                     w = hdr(a, xp->left_off);
                 }
-                if ((w == NULL) ||
-                    ((w->left_off? hdr(a, w->left_off)->color : REBAL_BLACK) == REBAL_BLACK &&
-                     (w->right_off? hdr(a, w->right_off)->color : REBAL_BLACK) == REBAL_BLACK)) {
+                
+                uint8_t w_left_color = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
+                uint8_t w_right_color = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
+                
+                if (w == NULL || (w_left_color == REBAL_BLACK && w_right_color == REBAL_BLACK)) {
                     if (w) w->color = REBAL_RED;
                     xi = xp;
+                    xp = hdr(a, xi->parent_off);
                 } else {
-                    if ((w->left_off? hdr(a, w->left_off)->color : REBAL_BLACK) == REBAL_BLACK) {
+                    if (w_left_color == REBAL_BLACK) {
                         if (w->right_off) hdr(a, w->right_off)->color = REBAL_BLACK;
                         w->color = REBAL_RED;
                         rb_left_rotate(a, w);
@@ -448,6 +532,8 @@ static rebal_block_header_t *split_block(rebal_t *a, rebal_block_header_t *b, si
     nb->size = remaining;
     nb->is_free = 1;
     nb->color = REBAL_BLACK; /* default; will be inserted into RB which sets color */
+    nb->canary = REBAL_CANARY;
+    rebal_memset(nb->pad2, 0, sizeof(nb->pad2));
 
     /* physical links */
     nb->next_phys_off = b->next_phys_off;
@@ -468,7 +554,7 @@ static rebal_block_header_t *coalesce(rebal_t *a, rebal_block_header_t *b) {
     /* merge with next if free */
     if (b->next_phys_off) {
         rebal_block_header_t *n = hdr(a, b->next_phys_off);
-        if (n->is_free) {
+        if (n && n->is_free && validate_block(a, n) == REBAL_SUCCESS) {
             rb_delete(a, n); /* remove neighbor from RB tree */
             b->size += n->size;
             b->next_phys_off = n->next_phys_off;
@@ -479,7 +565,7 @@ static rebal_block_header_t *coalesce(rebal_t *a, rebal_block_header_t *b) {
     /* merge with prev if free */
     if (b->prev_phys_off) {
         rebal_block_header_t *p = hdr(a, b->prev_phys_off);
-        if (p->is_free) {
+        if (p && p->is_free && validate_block(a, p) == REBAL_SUCCESS) {
             rb_delete(a, p);
             p->size += b->size;
             p->next_phys_off = b->next_phys_off;
@@ -495,9 +581,19 @@ static rebal_block_header_t *coalesce(rebal_t *a, rebal_block_header_t *b) {
 
 /* rebal_alloc: allocate payload of 'size' bytes from allocator 'a' */
 void *rebal_alloc(rebal_t *a, size_t size) {
-    if (!a || size == 0) return NULL;
+    if (!a) return NULL;
+    if (size == 0) return NULL;
+    if (size > REBAL_MAX_ALLOC_SIZE) return NULL;
+    
+    /* Validate allocator state */
+    if (validate_allocator(a) != REBAL_SUCCESS) return NULL;
 
-    size_t needed = align_up(size + sizeof(rebal_block_header_t), REBAL_MIN_ALIGN);
+    size_t total_size;
+    if (!safe_add_size_t(size, sizeof(rebal_block_header_t), &total_size)) {
+        return NULL; /* overflow */
+    }
+    
+    size_t needed = align_up(total_size, REBAL_MIN_ALIGN);
 
     rebal_block_header_t *b = rb_find_best(a, needed);
     if (!b) return NULL;
@@ -509,6 +605,7 @@ void *rebal_alloc(rebal_t *a, size_t size) {
     b = split_block(a, b, needed);
 
     b->is_free = 0;
+    b->canary = REBAL_CANARY;
     /* color/children/parent fields are irrelevant for allocated blocks */
 
     /* return pointer to payload (after header) */
@@ -518,8 +615,15 @@ void *rebal_alloc(rebal_t *a, size_t size) {
 /* rebal_free: free a previously allocated pointer */
 void rebal_free(rebal_t *a, void *ptr) {
     if (!a || !ptr) return;
+    
+    /* Validate allocator state */
+    if (validate_allocator(a) != REBAL_SUCCESS) return;
 
     rebal_block_header_t *b = (rebal_block_header_t *)((uintptr_t)ptr - sizeof(rebal_block_header_t));
+    
+    /* Validate block */
+    if (validate_block(a, b) != REBAL_SUCCESS) return;
+    
     if (b->is_free) return; /* double free guard */
 
     b->is_free = 1;
@@ -549,9 +653,18 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
     if (!a) {
         return NULL;
     }
+    
+    if (size > REBAL_MAX_ALLOC_SIZE) return NULL;
+    
+    /* Validate allocator state */
+    if (validate_allocator(a) != REBAL_SUCCESS) return NULL;
 
     /* Get the block header */
     rebal_block_header_t *b = (rebal_block_header_t *)((uintptr_t)ptr - sizeof(rebal_block_header_t));
+    
+    /* Validate block */
+    if (validate_block(a, b) != REBAL_SUCCESS) return NULL;
+    
     if (b->is_free) {
         return NULL; /* Block is already free */
     }
@@ -581,6 +694,8 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             new_free->is_free = 1;
             new_free->prev_phys_off = off_of(a, b);
             new_free->next_phys_off = b->next_phys_off;
+            new_free->canary = REBAL_CANARY;
+            rebal_memset(new_free->pad2, 0, sizeof(new_free->pad2));
             
             /* Update the original block's size and next pointer */
             b->size = (uint32_t)new_block_size;
@@ -608,7 +723,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
         rebal_block_header_t *next = hdr(a, b->next_phys_off);
         size_t needed = new_size - old_size;
         
-        if (next->is_free && (next->size >= needed)) {
+        if (next && next->is_free && validate_block(a, next) == REBAL_SUCCESS && (next->size >= needed)) {
             /* Remove next from free tree */
             rb_delete(a, next);
             
@@ -624,6 +739,8 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
                 new_next->is_free = 1;
                 new_next->prev_phys_off = off_of(a, b);
                 new_next->next_phys_off = next->next_phys_off;
+                new_next->canary = REBAL_CANARY;
+                rebal_memset(new_next->pad2, 0, sizeof(new_next->pad2));
                 
                 /* Update the original block's size and next pointer */
                 b->size += (uint32_t)needed;
@@ -670,6 +787,41 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
     return new_ptr;
 }
 
+
+/* -------------------- Statistics API -------------------- */
+
+int rebal_get_stats(rebal_t *a, size_t *total_free, size_t *total_allocated, 
+                    size_t *free_blocks) {
+    if (!a) return REBAL_ERROR_NULL_BUFFER;
+    if (validate_allocator(a) != REBAL_SUCCESS) return REBAL_ERROR_CORRUPTED;
+    
+    size_t free_bytes = 0;
+    size_t allocated_bytes = 0;
+    size_t free_count = 0;
+    
+    rebal_block_header_t *b = hdr(a, a->first_block);
+    while (b) {
+        if (validate_block(a, b) != REBAL_SUCCESS) {
+            return REBAL_ERROR_CORRUPTED;
+        }
+        
+        if (b->is_free) {
+            free_bytes += (b->size - sizeof(rebal_block_header_t));
+            free_count++;
+        } else {
+            allocated_bytes += (b->size - sizeof(rebal_block_header_t));
+        }
+        
+        if (b->next_phys_off == 0) break;
+        b = hdr(a, b->next_phys_off);
+    }
+    
+    if (total_free) *total_free = free_bytes;
+    if (total_allocated) *total_allocated = allocated_bytes;
+    if (free_blocks) *free_blocks = free_count;
+    
+    return REBAL_SUCCESS;
+}
 
 /* -------------------- Debug / Dump Helpers -------------------- */
 
