@@ -100,6 +100,13 @@ static int validate_block(rebal_t *a, rebal_block_header_t *b) {
     if (b->size < sizeof(rebal_block_header_t) || b->size > a->capacity) {
         return REBAL_ERROR_CORRUPTED;
     }
+    
+    /* Check that block doesn't overflow buffer bounds */
+    uintptr_t block_end = block_addr + b->size;
+    uintptr_t buf_end = base + a->capacity;
+    if (block_end > buf_end || block_end < block_addr) {
+        return REBAL_ERROR_CORRUPTED; /* Overflow or out of bounds */
+    }
 
     /* Check block magic: allocated blocks carry REBAL_BLOCK_MAGIC, free blocks 0 */
     if (b->is_free) {
@@ -139,7 +146,12 @@ int rebal_init(void *buffer, size_t buffer_size) {
     rebal_block_header_t *b = (rebal_block_header_t *)block_start;
     rebal_memset((void *)b, 0, sizeof(rebal_block_header_t));
 
-    uint32_t block_total_size = (uint32_t)(((uintptr_t)buffer + buffer_size) - block_start);
+    /* Calculate block size with overflow check */
+    uintptr_t block_end = (uintptr_t)buffer + buffer_size;
+    if (block_end < block_start) {
+        return REBAL_ERROR_BUFFER_TOO_LARGE; /* Overflow in calculation */
+    }
+    uint32_t block_total_size = (uint32_t)(block_end - block_start);
     b->size = block_total_size;
     b->is_free = 1;
     b->color = 0; /* black by default when inserted to RB as root */
@@ -546,6 +558,8 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
 
 /* Find and return the best-fit free block (smallest node >= size).
  * Since tree is ordered by size (and tie-break by offset), do standard search.
+ * When multiple blocks have the same size, we return the one found by the search,
+ * which is deterministic based on tree structure.
  */
 static rebal_block_header_t *rb_find_best(rebal_t *a, size_t size) {
     rebal_block_header_t *cur = rb_root(a);
@@ -575,11 +589,25 @@ static rebal_block_header_t *split_block(rebal_t *a, rebal_block_header_t *b, si
         return b;
     }
 
+    /* Check for overflow before casting */
+    if (needed > UINT32_MAX) {
+        return b; /* Can't split if needed exceeds 32-bit range */
+    }
+    
     uint32_t remaining = b->size - (uint32_t)needed;
     b->size = (uint32_t)needed;
 
     /* new block starts after b */
-    rebal_block_header_t *nb = (rebal_block_header_t *)((uintptr_t)b + (uintptr_t)needed);
+    uintptr_t nb_addr = (uintptr_t)b + (uintptr_t)needed;
+    /* Ensure the new block is properly aligned */
+    if (nb_addr & (REBAL_MIN_ALIGN - 1)) {
+        /* This should not happen if needed is properly aligned,
+         * but if it does, we can't split safely */
+        b->size += remaining; /* Restore original size */
+        return b;
+    }
+    
+    rebal_block_header_t *nb = (rebal_block_header_t *)nb_addr;
     rebal_memset(nb, 0, sizeof(rebal_block_header_t));
     nb->size = remaining;
     nb->is_free = 1;
@@ -607,7 +635,10 @@ static rebal_block_header_t *coalesce(rebal_t *a, rebal_block_header_t *b) {
         rebal_block_header_t *n = hdr(a, b->next_phys_off);
         if (n && n->is_free && validate_block(a, n) == REBAL_SUCCESS) {
             rb_delete(a, n); /* remove neighbor from RB tree */
-            b->size += n->size;
+            /* Overflow check */
+            if (b->size <= UINT32_MAX - n->size) {
+                b->size += n->size;
+            }
             b->next_phys_off = n->next_phys_off;
             if (n->next_phys_off) hdr(a, n->next_phys_off)->prev_phys_off = off_of(a, b);
         }
@@ -618,7 +649,10 @@ static rebal_block_header_t *coalesce(rebal_t *a, rebal_block_header_t *b) {
         rebal_block_header_t *p = hdr(a, b->prev_phys_off);
         if (p && p->is_free && validate_block(a, p) == REBAL_SUCCESS) {
             rb_delete(a, p);
-            p->size += b->size;
+            /* Overflow check */
+            if (p->size <= UINT32_MAX - b->size) {
+                p->size += b->size;
+            }
             p->next_phys_off = b->next_phys_off;
             if (b->next_phys_off) hdr(a, b->next_phys_off)->prev_phys_off = off_of(a, p);
             b = p;
@@ -733,15 +767,29 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
     if (size < old_size) {
         /* Calculate the size of the new block and potential split */
         size_t new_block_size = new_size + sizeof(rebal_block_header_t);
+        if (new_block_size > UINT32_MAX) {
+            return NULL; /* Overflow check */
+        }
         size_t remaining = b->size - new_block_size;
 
         /* Only split if we can create a new free block with minimum size */
         if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
             /* Create a new free block after the resized block */
-            rebal_block_header_t *new_free = (rebal_block_header_t *)((uintptr_t)b + new_block_size);
+            uintptr_t new_free_addr = (uintptr_t)b + new_block_size;
+            /* Ensure the new block is properly aligned */
+            if (new_free_addr & (REBAL_MIN_ALIGN - 1)) {
+                /* This should not happen if new_block_size is properly aligned,
+                 * but if it does, we can't split safely */
+                return ptr; /* Don't split, just return original pointer */
+            }
+            
+            rebal_block_header_t *new_free = (rebal_block_header_t *)new_free_addr;
             rebal_memset(new_free, 0, sizeof(rebal_block_header_t));
             
             /* Set up the new free block */
+            if (remaining > UINT32_MAX) {
+                return ptr; /* Can't split if remaining exceeds 32-bit range */
+            }
             new_free->size = (uint32_t)remaining;
             new_free->is_free = 1;
             new_free->prev_phys_off = off_of(a, b);
@@ -749,6 +797,9 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             new_free->magic = 0;
 
             /* Update the original block's size and next pointer */
+            if (new_block_size > UINT32_MAX) {
+                return ptr; /* Can't split if new_block_size exceeds 32-bit range */
+            }
             b->size = (uint32_t)new_block_size;
             b->next_phys_off = off_of(a, new_free);
 
@@ -786,27 +837,38 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
                  * memset, because new_next may overlap next's header when
                  * needed < sizeof(header). */
                 rebal_offset_t saved_next_off = next->next_phys_off;
-                rebal_block_header_t *new_next = (rebal_block_header_t *)((uintptr_t)next + needed);
-                rebal_memset(new_next, 0, sizeof(rebal_block_header_t));
+                uintptr_t new_next_addr = (uintptr_t)next + needed;
+                /* Ensure the new block is properly aligned */
+                if (new_next_addr & (REBAL_MIN_ALIGN - 1)) {
+                    /* This should not happen if needed is properly aligned,
+                     * but if it does, we can't split safely */
+                    remaining = 0; /* Fall through to take whole block */
+                } else {
+                    rebal_block_header_t *new_next = (rebal_block_header_t *)new_next_addr;
+                    rebal_memset(new_next, 0, sizeof(rebal_block_header_t));
 
-                new_next->size = (uint32_t)remaining;
-                new_next->is_free = 1;
-                new_next->prev_phys_off = off_of(a, b);
-                new_next->next_phys_off = saved_next_off;
-                new_next->magic = 0;
+                    new_next->size = (uint32_t)remaining;
+                    new_next->is_free = 1;
+                    new_next->prev_phys_off = off_of(a, b);
+                    new_next->next_phys_off = saved_next_off;
+                    new_next->magic = 0;
 
-                /* Update the original block's size and next pointer */
-                b->size += (uint32_t)needed;
-                b->next_phys_off = off_of(a, new_next);
+                    /* Update the original block's size and next pointer */
+                    if (needed > UINT32_MAX || b->size > UINT32_MAX - (uint32_t)needed) {
+                        return ptr; /* Overflow check */
+                    }
+                    b->size += (uint32_t)needed;
+                    b->next_phys_off = off_of(a, new_next);
 
-                /* Update the next block's previous pointer */
-                if (new_next->next_phys_off) {
-                    hdr(a, new_next->next_phys_off)->prev_phys_off = off_of(a, new_next);
+                    /* Update the next block's previous pointer */
+                    if (new_next->next_phys_off) {
+                        hdr(a, new_next->next_phys_off)->prev_phys_off = off_of(a, new_next);
+                    }
+
+                    /* Coalesce first, then insert — see shrink path comment */
+                    rebal_block_header_t *coalesced = coalesce(a, new_next);
+                    rb_insert(a, coalesced);
                 }
-
-                /* Coalesce first, then insert — see shrink path comment */
-                rebal_block_header_t *coalesced = coalesce(a, new_next);
-                rb_insert(a, coalesced);
             } else {
                 /* Take the whole next block */
                 rebal_offset_t saved_next_off = next->next_phys_off;
