@@ -27,6 +27,9 @@ void *rebal_memcpy(void *dest, const void *src, size_t n) {
 }
 
 
+/* In freestanding/WASM builds, provide memset/memcpy for the linker.
+ * In hosted builds, defining these would clash with libc (UB). */
+#ifdef BUILDING_WASM
 __attribute__((used))
 void *memset(void *dst, int v, size_t n) {
     return rebal_memset(dst, v, n);
@@ -36,6 +39,7 @@ __attribute__((used))
 void *memcpy(void *dest, const void *src, size_t n) {
     return rebal_memcpy(dest, src, n);
 }
+#endif
 
 static size_t align_up(size_t x, size_t a) {
     size_t m = a - 1;
@@ -51,27 +55,8 @@ static int safe_add_size_t(size_t a, size_t b, size_t *result) {
     return 1;
 }
 
-/* Safe multiplication with overflow detection */
-static int safe_mul_size_t(size_t a, size_t b, size_t *result) {
-    if (a != 0 && b > SIZE_MAX / a) {
-        return 0; /* overflow */
-    }
-    *result = a * b;
-    return 1;
-}
-
 static inline rebal_t *alloc_from_buf(void *buf) {
     return (rebal_t *)buf;
-}
-
-static inline void *ptr_from_off(void *base, rebal_offset_t off) {
-    if (off == 0) return NULL;
-    return (void *)((uintptr_t)base + (uintptr_t)off);
-}
-
-static inline rebal_offset_t off_from_ptr(void *base, void *p) {
-    if (p == NULL) return 0;
-    return (rebal_offset_t)((uintptr_t)p - (uintptr_t)base);
 }
 
 /* Convenience: header pointer from allocator and offset */
@@ -102,26 +87,37 @@ static int validate_allocator(rebal_t *a) {
  */
 static int validate_block(rebal_t *a, rebal_block_header_t *b) {
     if (!b) return REBAL_ERROR_INVALID_POINTER;
-    
+
     /* Check if block is within allocator bounds */
     uintptr_t base = (uintptr_t)a;
     uintptr_t block_addr = (uintptr_t)b;
-    
+
     if (block_addr < base || block_addr >= base + a->capacity) {
         return REBAL_ERROR_INVALID_POINTER;
     }
-    
+
     /* Check size is reasonable */
     if (b->size < sizeof(rebal_block_header_t) || b->size > a->capacity) {
         return REBAL_ERROR_CORRUPTED;
     }
-    
+
+    /* Check block magic: allocated blocks carry REBAL_BLOCK_MAGIC, free blocks 0 */
+    if (b->is_free) {
+        if (b->magic != 0) return REBAL_ERROR_CORRUPTED;
+    } else {
+        if (b->magic != REBAL_BLOCK_MAGIC) return REBAL_ERROR_INVALID_POINTER;
+    }
+
     return REBAL_SUCCESS;
 }
 
 int rebal_init(void *buffer, size_t buffer_size) {
     if (buffer == NULL) return REBAL_ERROR_NULL_BUFFER;
     if (buffer_size < MIN_OVERHEAD) return REBAL_ERROR_BUFFER_TOO_SMALL;
+    /* offset_t and capacity are 32-bit — reject buffers larger than 4 GB */
+    if (buffer_size > REBAL_MAX_CAPACITY) return REBAL_ERROR_BUFFER_TOO_LARGE;
+    /* Buffer must be aligned to REBAL_MIN_ALIGN so headers and payloads are aligned */
+    if (((uintptr_t)buffer & (REBAL_MIN_ALIGN - 1)) != 0) return REBAL_ERROR_INVALID_ALIGNMENT;
 
     rebal_t *a = alloc_from_buf(buffer);
     rebal_memset(a, 0, sizeof(rebal_t));
@@ -150,7 +146,7 @@ int rebal_init(void *buffer, size_t buffer_size) {
     b->left_off = b->right_off = b->parent_off = 0;
     b->prev_phys_off = 0;
     b->next_phys_off = 0;
-    b->pad2 = 0;
+    b->magic = 0; /* free block */
 
     rebal_offset_t boff = (rebal_offset_t)(block_start - base);
     a->first_block = boff;
@@ -160,20 +156,69 @@ int rebal_init(void *buffer, size_t buffer_size) {
     return REBAL_SUCCESS;
 }
 
+/* Forward declaration — rb_root is defined in the RB tree section below */
+static inline rebal_block_header_t *rb_root(rebal_t *a);
+
+/* Count nodes in the RB free tree (recursive). Returns -1 on corruption. */
+static int rb_count_depth(rebal_t *a, rebal_block_header_t *n, int depth) {
+    if (!n) return 0;
+    if (depth > 1024) return -1; /* guard against corrupted cycles */
+    int left = rb_count_depth(a, hdr(a, n->left_off), depth + 1);
+    if (left < 0) return -1;
+    int right = rb_count_depth(a, hdr(a, n->right_off), depth + 1);
+    if (right < 0) return -1;
+    return left + right + 1;
+}
+
+static int rb_count(rebal_t *a, rebal_block_header_t *n) {
+    return rb_count_depth(a, n, 0);
+}
+
 int rebal_validate(rebal_t *a) {
     int rc = validate_allocator(a);
     if (rc != REBAL_SUCCESS) return rc;
-    
-    /* Walk physical blocks and validate each */
+
+    /* Walk physical blocks: validate each, check adjacency and link consistency.
+     * Cap iterations to detect cycles caused by corruption. */
+    size_t free_count = 0;
+    size_t iter = 0;
+    size_t max_blocks = a->capacity / sizeof(rebal_block_header_t) + 1;
+
     rebal_block_header_t *b = hdr(a, a->first_block);
     while (b) {
+        if (++iter > max_blocks) return REBAL_ERROR_CORRUPTED;
+
         rc = validate_block(a, b);
         if (rc != REBAL_SUCCESS) return rc;
-        
+
+        if (b->is_free) free_count++;
+
+        /* Check adjacency: next physical block should be at b + b->size */
+        if (b->next_phys_off) {
+            rebal_offset_t expected = off_of(a, b) + (rebal_offset_t)b->size;
+            if (b->next_phys_off != expected) return REBAL_ERROR_CORRUPTED;
+
+            rebal_block_header_t *nxt = hdr(a, b->next_phys_off);
+            if (!nxt) return REBAL_ERROR_CORRUPTED;
+            /* Back-link must agree */
+            if (nxt->prev_phys_off != off_of(a, b)) return REBAL_ERROR_CORRUPTED;
+        } else {
+            /* Last block should end at the buffer boundary */
+            uintptr_t block_end = (uintptr_t)b + b->size;
+            uintptr_t buf_end = (uintptr_t)a + a->capacity;
+            if (block_end != buf_end) return REBAL_ERROR_CORRUPTED;
+        }
+
         if (b->next_phys_off == 0) break;
         b = hdr(a, b->next_phys_off);
     }
-    
+
+    /* Verify that the number of free blocks in the physical list matches
+     * the number of nodes in the RB free tree. */
+    int tree_count = rb_count(a, rb_root(a));
+    if (tree_count < 0) return REBAL_ERROR_CORRUPTED;
+    if ((size_t)tree_count != free_count) return REBAL_ERROR_CORRUPTED;
+
     return REBAL_SUCCESS;
 }
 
@@ -338,7 +383,12 @@ static void rb_insert(rebal_t *a, rebal_block_header_t *z) {
     }
 
     z->parent_off = (y ? off_of(a, y) : 0);
-    if (off_of(a, z) < off_of(a, y)) y->left_off = off_of(a, z);
+    /* Place z using the same comparison as the search: size first, then offset */
+    int go_left;
+    if (z->size < y->size) go_left = 1;
+    else if (z->size > y->size) go_left = 0;
+    else go_left = (off_of(a, z) < off_of(a, y));
+    if (go_left) y->left_off = off_of(a, z);
     else y->right_off = off_of(a, z);
 
     rb_insert_fixup(a, z);
@@ -362,28 +412,123 @@ static rebal_block_header_t *rb_minimum(rebal_t *a, rebal_block_header_t *n) {
     return n;
 }
 
+/* Delete fixup. x may be NULL (when the physically-removed node had no
+ * children); x_parent and x_is_left track the parent and side in that case
+ * so we can navigate the tree without dereferencing a NULL pointer.
+ * x_is_left is only used for the first iteration; after that, x becomes
+ * non-NULL (it takes the place of xp) and the side can be determined
+ * normally from the parent's child pointers.
+ */
+static void rb_delete_fixup(rebal_t *a, rebal_block_header_t *x,
+                            rebal_block_header_t *x_parent, int x_is_left) {
+    while (x != rb_root(a) && (x == NULL || x->color == REBAL_BLACK)) {
+        rebal_block_header_t *xp = (x != NULL) ? hdr(a, x->parent_off) : x_parent;
+        if (!xp) break;
+
+        int is_left;
+        if (x != NULL) {
+            is_left = (xp->left_off == off_of(a, x));
+        } else {
+            is_left = x_is_left;
+            /* After first iteration, x becomes non-NULL, so this is only
+             * used once. Reset to avoid stale use. */
+            x_is_left = 0;
+        }
+
+        if (is_left) {
+            rebal_block_header_t *w = hdr(a, xp->right_off);
+            if (w && w->color == REBAL_RED) {
+                w->color = REBAL_BLACK;
+                xp->color = REBAL_RED;
+                rb_left_rotate(a, xp);
+                w = hdr(a, xp->right_off);
+            }
+            uint8_t wl = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
+            uint8_t wr = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
+            if (w == NULL || (wl == REBAL_BLACK && wr == REBAL_BLACK)) {
+                if (w) w->color = REBAL_RED;
+                x = xp;
+                x_parent = hdr(a, x->parent_off);
+            } else {
+                if (wr == REBAL_BLACK) {
+                    if (w->left_off) hdr(a, w->left_off)->color = REBAL_BLACK;
+                    w->color = REBAL_RED;
+                    rb_right_rotate(a, w);
+                    w = hdr(a, xp->right_off);
+                }
+                w->color = xp->color;
+                xp->color = REBAL_BLACK;
+                if (w->right_off) hdr(a, w->right_off)->color = REBAL_BLACK;
+                rb_left_rotate(a, xp);
+                x = rb_root(a);
+            }
+        } else {
+            rebal_block_header_t *w = hdr(a, xp->left_off);
+            if (w && w->color == REBAL_RED) {
+                w->color = REBAL_BLACK;
+                xp->color = REBAL_RED;
+                rb_right_rotate(a, xp);
+                w = hdr(a, xp->left_off);
+            }
+            uint8_t wl = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
+            uint8_t wr = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
+            if (w == NULL || (wl == REBAL_BLACK && wr == REBAL_BLACK)) {
+                if (w) w->color = REBAL_RED;
+                x = xp;
+                x_parent = hdr(a, x->parent_off);
+            } else {
+                if (wl == REBAL_BLACK) {
+                    if (w->right_off) hdr(a, w->right_off)->color = REBAL_BLACK;
+                    w->color = REBAL_RED;
+                    rb_left_rotate(a, w);
+                    w = hdr(a, xp->left_off);
+                }
+                w->color = xp->color;
+                xp->color = REBAL_BLACK;
+                if (w->left_off) hdr(a, w->left_off)->color = REBAL_BLACK;
+                rb_right_rotate(a, xp);
+                x = rb_root(a);
+            }
+        }
+    }
+    if (x) x->color = REBAL_BLACK;
+}
+
 /* Delete node z from RB tree and fixup.
- * Simplified implementation with better NULL handling.
+ * Tracks x_parent and x_is_left explicitly so the fixup works correctly
+ * even when the spliced-out node's child x is NULL (no sentinel needed).
  */
 static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
     rebal_block_header_t *y = z;
-    uint8_t y_original_color = y->color;
     rebal_block_header_t *x = NULL;
+    rebal_block_header_t *x_parent = NULL;
+    int x_is_left = 0;
+    uint8_t y_original_color = y->color;
 
     if (z->left_off == 0) {
         x = hdr(a, z->right_off);
+        x_parent = hdr(a, z->parent_off);
+        /* Record which side z was on before transplant zeroes the pointer */
+        if (x_parent) x_is_left = (x_parent->left_off == off_of(a, z));
         rb_transplant(a, z, x);
     } else if (z->right_off == 0) {
         x = hdr(a, z->left_off);
+        x_parent = hdr(a, z->parent_off);
+        if (x_parent) x_is_left = (x_parent->left_off == off_of(a, z));
         rb_transplant(a, z, x);
     } else {
         y = rb_minimum(a, hdr(a, z->right_off));
         y_original_color = y->color;
         x = hdr(a, y->right_off);
-
         if (y->parent_off == off_of(a, z)) {
+            x_parent = y;
+            /* y replaces z, and x (NULL) is y's right child */
+            x_is_left = 0; /* x is the right child of y */
             if (x) x->parent_off = off_of(a, y);
         } else {
+            x_parent = hdr(a, y->parent_off);
+            /* x takes y's place; y was the left child of its parent (minimum) */
+            x_is_left = 1;
             rb_transplant(a, y, x);
             y->right_off = z->right_off;
             if (y->right_off) hdr(a, y->right_off)->parent_off = off_of(a, y);
@@ -394,91 +539,8 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
         y->color = z->color;
     }
 
-    /* Fixup if original color was BLACK */
     if (y_original_color == REBAL_BLACK) {
-        /* Simplified fixup that handles NULL nodes properly */
-        rebal_block_header_t *xi = x;
-        rebal_block_header_t *xp = NULL;
-        
-        /* Find parent of x (whether x is NULL or not) */
-        if (xi) {
-            xp = hdr(a, xi->parent_off);
-        } else {
-            /* x is NULL, we need to find its parent from the transplant operation */
-            /* The parent of NULL x is the node that was transplanted */
-            if (y->parent_off == off_of(a, z)) {
-                xp = z; /* x was originally z's child */
-            } else {
-                xp = hdr(a, y->parent_off);
-            }
-        }
-        
-        while (xi != rb_root(a) && (xi == NULL || xi->color == REBAL_BLACK)) {
-            if (!xp) break; /* safety check */
-            
-            if (xp->left_off == off_of(a, xi) || (xi == NULL && xp->left_off == 0)) {
-                /* xi is left child */
-                rebal_block_header_t *w = hdr(a, xp->right_off);
-                if (w && w->color == REBAL_RED) {
-                    w->color = REBAL_BLACK;
-                    xp->color = REBAL_RED;
-                    rb_left_rotate(a, xp);
-                    w = hdr(a, xp->right_off);
-                }
-                
-                uint8_t w_left_color = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
-                uint8_t w_right_color = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
-                
-                if (w == NULL || (w_left_color == REBAL_BLACK && w_right_color == REBAL_BLACK)) {
-                    if (w) w->color = REBAL_RED;
-                    xi = xp;
-                    xp = hdr(a, xi->parent_off);
-                } else {
-                    if (w_right_color == REBAL_BLACK) {
-                        if (w->left_off) hdr(a, w->left_off)->color = REBAL_BLACK;
-                        w->color = REBAL_RED;
-                        rb_right_rotate(a, w);
-                        w = hdr(a, xp->right_off);
-                    }
-                    if (w) w->color = xp->color;
-                    xp->color = REBAL_BLACK;
-                    if (w && w->right_off) hdr(a, w->right_off)->color = REBAL_BLACK;
-                    rb_left_rotate(a, xp);
-                    xi = rb_root(a);
-                }
-            } else {
-                /* xi is right child - symmetric case */
-                rebal_block_header_t *w = hdr(a, xp->left_off);
-                if (w && w->color == REBAL_RED) {
-                    w->color = REBAL_BLACK;
-                    xp->color = REBAL_RED;
-                    rb_right_rotate(a, xp);
-                    w = hdr(a, xp->left_off);
-                }
-                
-                uint8_t w_left_color = (w && w->left_off) ? hdr(a, w->left_off)->color : REBAL_BLACK;
-                uint8_t w_right_color = (w && w->right_off) ? hdr(a, w->right_off)->color : REBAL_BLACK;
-                
-                if (w == NULL || (w_left_color == REBAL_BLACK && w_right_color == REBAL_BLACK)) {
-                    if (w) w->color = REBAL_RED;
-                    xi = xp;
-                    xp = hdr(a, xi->parent_off);
-                } else {
-                    if (w_left_color == REBAL_BLACK) {
-                        if (w->right_off) hdr(a, w->right_off)->color = REBAL_BLACK;
-                        w->color = REBAL_RED;
-                        rb_left_rotate(a, w);
-                        w = hdr(a, xp->left_off);
-                    }
-                    if (w) w->color = xp->color;
-                    xp->color = REBAL_BLACK;
-                    if (w && w->left_off) hdr(a, w->left_off)->color = REBAL_BLACK;
-                    rb_right_rotate(a, xp);
-                    xi = rb_root(a);
-                }
-            }
-        }
-        if (xi) xi->color = REBAL_BLACK;
+        rb_delete_fixup(a, x, x_parent, x_is_left);
     }
 }
 
@@ -522,7 +584,7 @@ static rebal_block_header_t *split_block(rebal_t *a, rebal_block_header_t *b, si
     nb->size = remaining;
     nb->is_free = 1;
     nb->color = REBAL_BLACK; /* default; will be inserted into RB which sets color */
-    nb->pad2 = 0;
+    nb->magic = 0; /* free block */
 
     /* physical links */
     nb->next_phys_off = b->next_phys_off;
@@ -594,6 +656,7 @@ void *rebal_alloc(rebal_t *a, size_t size) {
     b = split_block(a, b, needed);
 
     b->is_free = 0;
+    b->magic = REBAL_BLOCK_MAGIC;
     /* color/children/parent fields are irrelevant for allocated blocks */
 
     /* return pointer to payload (after header) */
@@ -615,6 +678,7 @@ void rebal_free(rebal_t *a, void *ptr) {
     if (b->is_free) return; /* double free guard */
 
     b->is_free = 1;
+    b->magic = 0; /* clear magic — block is now free */
 
     /* coalesce with neighbors; coalesce() removes neighbors from RB tree */
     rebal_block_header_t *nb = coalesce(a, b);
@@ -682,77 +746,79 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             new_free->is_free = 1;
             new_free->prev_phys_off = off_of(a, b);
             new_free->next_phys_off = b->next_phys_off;
-            new_free->pad2 = 0;
-            
+            new_free->magic = 0;
+
             /* Update the original block's size and next pointer */
             b->size = (uint32_t)new_block_size;
             b->next_phys_off = off_of(a, new_free);
-            
+
             /* Update the next block's previous pointer */
             if (new_free->next_phys_off) {
                 hdr(a, new_free->next_phys_off)->prev_phys_off = off_of(a, new_free);
             }
-            
-            /* Insert the new free block into the free tree */
-            rb_insert(a, new_free);
-            
-            /* Try to coalesce the new free block with its neighbors */
-            coalesce(a, new_free);
+
+            /* Coalesce first (removes neighbors from tree, merges sizes),
+             * then insert the result — inserting before coalescing would
+             * leave a node in the tree with a stale size key. */
+            rebal_block_header_t *coalesced = coalesce(a, new_free);
+            rb_insert(a, coalesced);
         }
         
         return ptr;
     }
 
     /* If we get here, we need to grow the block */
-    
+
     /* Check if the next block is free and large enough */
     if (b->next_phys_off) {
         rebal_block_header_t *next = hdr(a, b->next_phys_off);
         size_t needed = new_size - old_size;
-        
+
         if (next && next->is_free && validate_block(a, next) == REBAL_SUCCESS && (next->size >= needed)) {
             /* Remove next from free tree */
             rb_delete(a, next);
-            
+
             /* Calculate new size if we take what we need from next */
             size_t remaining = next->size - needed;
-            
+
             if (remaining >= sizeof(rebal_block_header_t) + REBAL_MIN_ALIGN) {
-                /* Split the next block */
+                /* Split the next block. Save next->next_phys_off before
+                 * memset, because new_next may overlap next's header when
+                 * needed < sizeof(header). */
+                rebal_offset_t saved_next_off = next->next_phys_off;
                 rebal_block_header_t *new_next = (rebal_block_header_t *)((uintptr_t)next + needed);
                 rebal_memset(new_next, 0, sizeof(rebal_block_header_t));
-                
+
                 new_next->size = (uint32_t)remaining;
                 new_next->is_free = 1;
                 new_next->prev_phys_off = off_of(a, b);
-                new_next->next_phys_off = next->next_phys_off;
-                new_next->pad2 = 0;
-                
+                new_next->next_phys_off = saved_next_off;
+                new_next->magic = 0;
+
                 /* Update the original block's size and next pointer */
                 b->size += (uint32_t)needed;
                 b->next_phys_off = off_of(a, new_next);
-                
+
                 /* Update the next block's previous pointer */
                 if (new_next->next_phys_off) {
                     hdr(a, new_next->next_phys_off)->prev_phys_off = off_of(a, new_next);
                 }
-                
-                /* Insert the new free block into the free tree */
-                rb_insert(a, new_next);
-                
-                /* Try to coalesce the new free block with its neighbors */
-                coalesce(a, new_next);
+
+                /* Coalesce first, then insert — see shrink path comment */
+                rebal_block_header_t *coalesced = coalesce(a, new_next);
+                rb_insert(a, coalesced);
             } else {
                 /* Take the whole next block */
+                rebal_offset_t saved_next_off = next->next_phys_off;
                 b->size += next->size;
-                b->next_phys_off = next->next_phys_off;
-                
+                b->next_phys_off = saved_next_off;
+
                 /* Update the next block's previous pointer */
-                if (next->next_phys_off) {
-                    hdr(a, next->next_phys_off)->prev_phys_off = off_of(a, b);
+                if (saved_next_off) {
+                    hdr(a, saved_next_off)->prev_phys_off = off_of(a, b);
                 }
             }
-            
+
             return ptr;
         }
     }
@@ -784,20 +850,23 @@ int rebal_get_stats(rebal_t *a, size_t *total_free, size_t *total_allocated,
     size_t free_bytes = 0;
     size_t allocated_bytes = 0;
     size_t free_count = 0;
-    
+    size_t iter = 0;
+    size_t max_blocks = a->capacity / sizeof(rebal_block_header_t) + 1;
+
     rebal_block_header_t *b = hdr(a, a->first_block);
     while (b) {
+        if (++iter > max_blocks) return REBAL_ERROR_CORRUPTED;
         if (validate_block(a, b) != REBAL_SUCCESS) {
             return REBAL_ERROR_CORRUPTED;
         }
-        
+
         if (b->is_free) {
             free_bytes += (b->size - sizeof(rebal_block_header_t));
             free_count++;
         } else {
             allocated_bytes += (b->size - sizeof(rebal_block_header_t));
         }
-        
+
         if (b->next_phys_off == 0) break;
         b = hdr(a, b->next_phys_off);
     }

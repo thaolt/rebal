@@ -12,7 +12,7 @@ Features:
  * Red-Black tree for free blocks to guarantee O(log n) search/inserts/removes
  * Memory backed by a user-provided buffer (no real heap needed).
  * No libc dependent.
- * Memory safety hardening with bounds checking and corruption detection
+ * Memory safety hardening with bounds checking, block magic validation, and structural integrity checks
  * Comprehensive error reporting with descriptive error codes
  * Overflow protection for size calculations
  * Bounds checking for all memory operations
@@ -21,12 +21,13 @@ Features:
 Limits:
  * Not thread-safe; use a separate arena per thread if needed
  * Maximum single allocation size is 1GB (configurable via REBAL_MAX_ALLOC_SIZE)
+ * Maximum buffer size is 4GB (offset_t is 32-bit); change `rebal_offset_t` and `rebal_block_header_t.size` to `uint64_t` for larger buffers
 
 Notes:
- * Offsets are 32-bit; change 'offset_t' to uint64_t if buffer > 4GB.
- * Block headers include canary values for corruption detection
- * Allocator state can be validated using rebal_validate()
- * Statistics can be obtained using rebal_get_stats()
+ * Offsets are 32-bit; change `rebal_offset_t` to uint64_t if buffer > 4GB.
+ * Allocated blocks carry a magic value (`REBAL_BLOCK_MAGIC`) for pointer validation on free
+ * Allocator state can be validated using `rebal_validate()` (checks physical links, adjacency, and tree/free-list consistency)
+ * Statistics can be obtained using `rebal_get_stats()`
 
 ## Origin story
 
@@ -195,10 +196,10 @@ cd build
 
 The allocator has been significantly improved with:
 
-1. **Memory Safety**: Added bounds checking, overflow protection, and canary values for corruption detection
+1. **Memory Safety**: Added bounds checking, overflow protection, block magic validation for pointer authentication, and structural integrity checks (physical link consistency, adjacency, tree/free-list count matching)
 2. **Error Handling**: Implemented descriptive error codes and comprehensive validation
-3. **Testing**: Added comprehensive test suite with 24+ tests covering all functionality
+3. **Testing**: Added comprehensive test suite with 30+ tests including a stress/fuzz test covering all functionality
 4. **Documentation**: Added detailed function documentation and usage examples
 5. **Build System**: Improved CMake configuration with proper library and test targets
-6. **Robustness**: Enhanced RB tree implementation with better NULL handling and simplified logic
+6. **Robustness**: Fixed RB tree insert/delete correctness (size-then-offset ordering, proper x_parent tracking in delete fixup) and realloc coalescing (coalesce-before-insert to avoid stale tree keys)
 7. **Statistics**: Added API to query allocator state and memory usage statistics

@@ -4,7 +4,7 @@
 
 int main(void) {
     /* small buffer for testing */
-    static uint8_t buffer[2048];
+    static _Alignas(REBAL_MIN_ALIGN) uint8_t buffer[2048];
 
     int rc = rebal_init(buffer, sizeof(buffer));
     if (rc != REBAL_SUCCESS) {

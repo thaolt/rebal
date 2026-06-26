@@ -11,8 +11,10 @@ extern "C" {
 /* -------------------- Config / Types -------------------- */
 
 #define REBAL_MAGIC 0xC0FEBABE
+#define REBAL_BLOCK_MAGIC 0xDEADBEEFu /* stamped on allocated blocks for pointer validation */
 #define REBAL_MIN_ALIGN 8u
 #define REBAL_MAX_ALLOC_SIZE ((size_t)(1ULL << 30)) /* 1GB max allocation */
+#define REBAL_MAX_CAPACITY ((size_t)0xFFFFFFFFu) /* 4GB max buffer (offset_t is 32-bit) */
 
 typedef uint32_t rebal_offset_t; /* change to uint64_t for >4GB buffers */
 
@@ -27,7 +29,8 @@ typedef enum {
     REBAL_ERROR_DOUBLE_FREE = -6,
     REBAL_ERROR_OUT_OF_MEMORY = -7,
     REBAL_ERROR_SIZE_TOO_LARGE = -8,
-    REBAL_ERROR_INVALID_STATE = -9
+    REBAL_ERROR_INVALID_STATE = -9,
+    REBAL_ERROR_BUFFER_TOO_LARGE = -10
 } rebal_error_t;
 
 /* forward */
@@ -46,7 +49,7 @@ typedef struct rebal_block_header {
 
     rebal_offset_t prev_phys_off; /* previous physical block (0 if none) */
     rebal_offset_t next_phys_off; /* next physical block (0 if none) */
-    uint32_t pad2;               /* padding to align to 32 bytes total */
+    uint32_t magic;              /* REBAL_BLOCK_MAGIC if allocated, 0 if free */
 } rebal_block_header_t;
 
 /* Allocator control header at buffer start */
@@ -56,6 +59,12 @@ struct rebal {
     rebal_offset_t free_root;   /* root of RB free tree (0 if none) */
     rebal_offset_t first_block; /* offset of first physical block header */
 };
+
+/* Ensure header sizes are aligned so payloads stay aligned */
+_Static_assert(sizeof(rebal_block_header_t) % REBAL_MIN_ALIGN == 0,
+               "block header must be a multiple of REBAL_MIN_ALIGN");
+_Static_assert(sizeof(rebal_block_header_t) == 32,
+               "block header layout changed unexpectedly");
 
 
 /* -------------------- Public API -------------------- */
