@@ -558,8 +558,9 @@ static void rb_delete(rebal_t *a, rebal_block_header_t *z) {
 
 /* Find and return the best-fit free block (smallest node >= size).
  * Since tree is ordered by size (and tie-break by offset), do standard search.
- * When multiple blocks have the same size, we return the one found by the search,
- * which is deterministic based on tree structure.
+ * When multiple blocks have the same size, we return the first one found,
+ * which is deterministic based on tree structure. This is correct for best-fit
+ * since any block of the same size is equally good.
  */
 static rebal_block_header_t *rb_find_best(rebal_t *a, size_t size) {
     rebal_block_header_t *cur = rb_root(a);
@@ -787,9 +788,6 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             rebal_memset(new_free, 0, sizeof(rebal_block_header_t));
             
             /* Set up the new free block */
-            if (remaining > UINT32_MAX) {
-                return ptr; /* Can't split if remaining exceeds 32-bit range */
-            }
             new_free->size = (uint32_t)remaining;
             new_free->is_free = 1;
             new_free->prev_phys_off = off_of(a, b);
@@ -797,9 +795,6 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
             new_free->magic = 0;
 
             /* Update the original block's size and next pointer */
-            if (new_block_size > UINT32_MAX) {
-                return ptr; /* Can't split if new_block_size exceeds 32-bit range */
-            }
             b->size = (uint32_t)new_block_size;
             b->next_phys_off = off_of(a, new_free);
 
@@ -841,8 +836,7 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
                 /* Ensure the new block is properly aligned */
                 if (new_next_addr & (REBAL_MIN_ALIGN - 1)) {
                     /* This should not happen if needed is properly aligned,
-                     * but if it does, we can't split safely */
-                    remaining = 0; /* Fall through to take whole block */
+                     * but if it does, we can't split safely. Take whole block instead. */
                 } else {
                     rebal_block_header_t *new_next = (rebal_block_header_t *)new_next_addr;
                     rebal_memset(new_next, 0, sizeof(rebal_block_header_t));
@@ -868,17 +862,19 @@ void *rebal_realloc(rebal_t *a, void *ptr, size_t size) {
                     /* Coalesce first, then insert — see shrink path comment */
                     rebal_block_header_t *coalesced = coalesce(a, new_next);
                     rb_insert(a, coalesced);
+                    
+                    return ptr; /* Successfully split and expanded */
                 }
-            } else {
-                /* Take the whole next block */
-                rebal_offset_t saved_next_off = next->next_phys_off;
-                b->size += next->size;
-                b->next_phys_off = saved_next_off;
+            }
+            
+            /* Take the whole next block (either not enough space to split, or alignment failed) */
+            rebal_offset_t saved_next_off = next->next_phys_off;
+            b->size += next->size;
+            b->next_phys_off = saved_next_off;
 
-                /* Update the next block's previous pointer */
-                if (saved_next_off) {
-                    hdr(a, saved_next_off)->prev_phys_off = off_of(a, b);
-                }
+            /* Update the next block's previous pointer */
+            if (saved_next_off) {
+                hdr(a, saved_next_off)->prev_phys_off = off_of(a, b);
             }
 
             return ptr;
