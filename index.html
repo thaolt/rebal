@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rebal WASM Demo</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --free: #4ade80;
+      --alloc: #f87171;
+      --selected: #fbbf24;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 1.5rem 2rem;
+    }
+
+    header h1 { margin: 0 0 0.25rem 0; font-size: 1.75rem; }
+    header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1.5rem;
+      padding: 1.5rem 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+
+    .panel h2 {
+      margin: 0 0 1rem 0;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+
+    #visualizer .panel {
+      margin-bottom: 0;
+    }
+
+    #memory-canvas {
+      width: 100%;
+      height: 120px;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      cursor: crosshair;
+      background: #e2e8f0;
+    }
+
+    #block-info {
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+      color: var(--muted);
+      min-height: 1.35rem;
+    }
+
+    .controls-row {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      align-items: center;
+    }
+
+    input[type="number"] {
+      width: 100px;
+      padding: 0.45rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 0.375rem;
+      font-size: 0.9rem;
+    }
+
+    button {
+      padding: 0.45rem 0.85rem;
+      border: none;
+      border-radius: 0.375rem;
+      background: var(--accent);
+      color: white;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    button:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { background: #cbd5e1; cursor: not-allowed; }
+
+    button.secondary { background: var(--muted); }
+    button.secondary:hover:not(:disabled) { background: #475569; }
+    button.danger { background: #dc2626; }
+    button.danger:hover:not(:disabled) { background: #b91c1c; }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    .stat-card {
+      background: #f1f5f9;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+    }
+
+    .stat-card .label { font-size: 0.75rem; color: var(--muted); }
+    .stat-card .value { font-size: 1.25rem; font-weight: 600; }
+
+    .legend {
+      display: flex;
+      gap: 1rem;
+      margin-top: 0.75rem;
+      font-size: 0.85rem;
+    }
+    .legend span { display: flex; align-items: center; gap: 0.35rem; }
+    .dot { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+    .dot.free { background: var(--free); }
+    .dot.alloc { background: var(--alloc); }
+
+    #log {
+      max-height: 220px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.82rem;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.5rem;
+      background: #f8fafc;
+    }
+
+    .log-entry { padding: 0.15rem 0; border-bottom: 1px solid #f1f5f9; }
+    .log-entry:last-child { border-bottom: none; }
+    .log-error { color: #dc2626; }
+    .log-success { color: #16a34a; }
+
+    #blocks-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    #blocks-table th, #blocks-table td {
+      text-align: left;
+      padding: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #blocks-table th { color: var(--muted); font-weight: 600; }
+    #blocks-table tr.selected { background: #fef3c7; }
+    #blocks-table td button { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+    #blocks-table .status-free { color: #16a34a; font-weight: 600; }
+    #blocks-table .status-alloc { color: #dc2626; font-weight: 600; }
+
+    .hint {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>rebal WASM Demo</h1>
+    <p>Interactive visualizer for the red-black allocator. Built with <code>clang --target=wasm32</code> and <code>wasm-ld</code>.</p>
+  </header>
+
+  <main>
+    <section id="visualizer">
+      <div class="panel">
+        <h2>Memory Layout</h2>
+        <canvas id="memory-canvas" width="900" height="120"></canvas>
+        <div id="block-info">Hover or click a block for details</div>
+        <div class="legend">
+          <span><span class="dot free"></span>Free</span>
+          <span><span class="dot alloc"></span>Allocated</span>
+          <span><span class="dot" style="background:var(--selected); border:1px solid #b45309;"></span>Selected</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Physical Blocks</h2>
+        <table id="blocks-table">
+          <thead>
+            <tr><th>Offset</th><th>Size</th><th>Payload</th><th>Status</th><th>Action</th></tr>
+          </thead>
+          <tbody id="blocks-body"></tbody>
+        </table>
+        <p class="hint">Click a row to select it. Payload pointer = block offset + 32 bytes header.</p>
+      </div>
+    </section>
+
+    <section id="controls">
+      <div class="panel">
+        <h2>Controls</h2>
+        <button id="btn-init">Initialize / Reset</button>
+        <div class="controls-row">
+          <input id="alloc-size" type="number" min="1" value="64" placeholder="bytes">
+          <button id="btn-alloc">Allocate</button>
+        </div>
+        <div class="controls-row">
+          <input id="realloc-size" type="number" min="1" placeholder="new bytes">
+          <button id="btn-realloc" disabled>Realloc selected</button>
+        </div>
+        <div class="controls-row">
+          <button id="btn-free" class="danger" disabled>Free selected</button>
+        </div>
+        <div class="controls-row">
+          <button id="btn-validate" class="secondary">Validate</button>
+          <button id="btn-stress" class="secondary">Stress test</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Statistics</h2>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="label">Capacity</div><div class="value" id="stat-capacity">-</div></div>
+          <div class="stat-card"><div class="label">Used</div><div class="value" id="stat-used">-</div></div>
+          <div class="stat-card"><div class="label">Free</div><div class="value" id="stat-free">-</div></div>
+          <div class="stat-card"><div class="label">Free blocks</div><div class="value" id="stat-blocks">-</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Operation Log</h2>
+        <div id="log"></div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const REBAL_MAGIC = 0xC0FEBABE;
+    const BLOCK_HEADER_SIZE = 32;
+    const REHEADER_SIZE = 16;
+
+    const errorNames = {
+      0: 'SUCCESS',
+      [-1]: 'NULL_BUFFER',
+      [-2]: 'BUFFER_TOO_SMALL',
+      [-3]: 'INVALID_ALIGNMENT',
+      [-4]: 'CORRUPTED',
+      [-5]: 'INVALID_POINTER',
+      [-6]: 'DOUBLE_FREE',
+      [-7]: 'OUT_OF_MEMORY',
+      [-8]: 'SIZE_TOO_LARGE',
+      [-9]: 'INVALID_STATE',
+      [-10]: 'BUFFER_TOO_LARGE'
+    };
+
+    let wasm = null;
+    let memory = null;
+    let exports = null;
+    let heapBase = 0;
+    let selectedBlock = null;
+
+    const canvas = document.getElementById('memory-canvas');
+    const ctx = canvas.getContext('2d');
+    const blockInfo = document.getElementById('block-info');
+    const blocksBody = document.getElementById('blocks-body');
+    const logEl = document.getElementById('log');
+    let blockRects = [];
+
+    function log(msg, type = '') {
+      const div = document.createElement('div');
+      div.className = 'log-entry ' + type;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function errorName(rc) {
+      return errorNames[rc] ?? `UNKNOWN(${rc})`;
+    }
+
+    async function loadWasm() {
+      try {
+        const response = await fetch('./rebal.wasm');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bytes = await response.arrayBuffer();
+        const module = await WebAssembly.instantiate(bytes, {});
+        wasm = module.instance;
+        exports = wasm.exports;
+        memory = exports.memory;
+        heapBase = exports.__heap_base.value;
+        log('WASM module loaded');
+      } catch (e) {
+        log('Failed to load rebal.wasm: ' + e.message, 'log-error');
+      }
+    }
+
+    function readArenaHeader() {
+      const u32 = new Uint32Array(memory.buffer, heapBase, 4);
+      return {
+        magic: u32[0],
+        capacity: u32[1],
+        freeRoot: u32[2],
+        firstBlock: u32[3]
+      };
+    }
+
+    function readBlock(offset) {
+      const base = heapBase + offset;
+      const u32 = new Uint32Array(memory.buffer, base, 8);
+      const u8 = new Uint8Array(memory.buffer, base + 4, 2);
+      return {
+        offset,
+        size: u32[0],
+        isFree: u8[0] !== 0,
+        color: u8[1],
+        left: u32[2],
+        right: u32[3],
+        parent: u32[4],
+        prev: u32[5],
+        next: u32[6],
+        magic: u32[7]
+      };
+    }
+
+    function walkBlocks() {
+      const header = readArenaHeader();
+      const blocks = [];
+      let off = header.firstBlock;
+      while (off !== 0) {
+        const b = readBlock(off);
+        blocks.push(b);
+        off = b.next;
+      }
+      return blocks;
+    }
+
+    function renderMemory() {
+      const header = readArenaHeader();
+      const width = canvas.width;
+      const height = canvas.height;
+
+      ctx.clearRect(0, 0, width, height);
+      blockRects = [];
+
+      if (header.magic !== REBAL_MAGIC) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Allocator not initialized. Click Initialize / Reset.', 12, height / 2 + 5);
+        return;
+      }
+
+      const cap = header.capacity;
+      const blocks = walkBlocks();
+
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillRect(0, 0, width, height);
+
+      function drawBlock(b) {
+        const x = (b.offset / cap) * width;
+        const w = Math.max(3, (b.size / cap) * width);
+        blockRects.push({ x, w, block: b });
+
+        ctx.fillStyle = b.isFree ? '#4ade80' : '#f87171';
+        ctx.fillRect(x, 0, w, height);
+
+        if (selectedBlock && b.offset === selectedBlock.offset) {
+          ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
+          ctx.fillRect(x, 0, w, height);
+          ctx.strokeStyle = '#b45309';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, 0, w, height);
+          ctx.lineWidth = 1;
+        } else {
+          ctx.strokeStyle = '#475569';
+          ctx.strokeRect(x, 0, w, height);
+        }
+      }
+
+      /* Draw free blocks first, then allocated blocks on top, so small
+       * allocations remain visible even when adjacent to a large free block. */
+      blocks.filter(b => b.isFree).forEach(drawBlock);
+      blocks.filter(b => !b.isFree).forEach(drawBlock);
+
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(0, 0, width, height);
+      ctx.lineWidth = 1;
+    }
+
+    function blockAtVisualX(x) {
+      for (let i = blockRects.length - 1; i >= 0; i--) {
+        const r = blockRects[i];
+        if (x >= r.x && x < r.x + r.w) return r.block;
+      }
+      return null;
+    }
+
+    function renderBlocks() {
+      const header = readArenaHeader();
+      blocksBody.innerHTML = '';
+
+      if (header.magic !== REBAL_MAGIC) return;
+
+      const blocks = walkBlocks();
+      for (const b of blocks) {
+        const tr = document.createElement('tr');
+        if (selectedBlock && b.offset === selectedBlock.offset) tr.className = 'selected';
+        tr.innerHTML = `
+          <td>${b.offset}</td>
+          <td>${b.size}</td>
+          <td>${Math.max(0, b.size - BLOCK_HEADER_SIZE)}</td>
+          <td class="${b.isFree ? 'status-free' : 'status-alloc'}">${b.isFree ? 'FREE' : 'ALLOC'}</td>
+          <td>${b.isFree ? '' : '<button class="free-row">Free</button>'}</td>
+        `;
+        tr.addEventListener('click', () => selectBlock(b));
+        const freeBtn = tr.querySelector('.free-row');
+        if (freeBtn) freeBtn.addEventListener('click', (e) => { e.stopPropagation(); freeSelected(); });
+        blocksBody.appendChild(tr);
+      }
+    }
+
+    function renderStats() {
+      const header = readArenaHeader();
+      if (header.magic !== REBAL_MAGIC) {
+        document.getElementById('stat-capacity').textContent = '-';
+        document.getElementById('stat-used').textContent = '-';
+        document.getElementById('stat-free').textContent = '-';
+        document.getElementById('stat-blocks').textContent = '-';
+        return;
+      }
+      const cap = header.capacity;
+      const used = exports.rebal_wasm_get_stats_total_allocated();
+      const free = exports.rebal_wasm_get_stats_total_free();
+      const blocks = exports.rebal_wasm_get_stats_free_blocks();
+      document.getElementById('stat-capacity').textContent = `${cap} B`;
+      document.getElementById('stat-used').textContent = `${used} B (${((used / cap) * 100).toFixed(1)}%)`;
+      document.getElementById('stat-free').textContent = `${free} B`;
+      document.getElementById('stat-blocks').textContent = blocks;
+    }
+
+    function render() {
+      renderMemory();
+      renderBlocks();
+      renderStats();
+    }
+
+    function selectBlock(b) {
+      selectedBlock = b;
+      const payload = getPointerFromBlock(b);
+      blockInfo.textContent = `Selected block at offset ${b.offset}, size ${b.size} B (${b.size - BLOCK_HEADER_SIZE} B payload), payload ptr=${payload}, status=${b.isFree ? 'FREE' : 'ALLOC'}, color=${b.color ? 'R' : 'B'}`;
+      document.getElementById('btn-free').disabled = b.isFree;
+      document.getElementById('btn-realloc').disabled = b.isFree;
+      render();
+    }
+
+    function getPointerFromBlock(b) {
+      return b ? heapBase + b.offset + BLOCK_HEADER_SIZE : 0;
+    }
+
+    function findBlockByPointer(ptr) {
+      const blocks = walkBlocks();
+      return blocks.find(b => heapBase + b.offset + BLOCK_HEADER_SIZE === ptr) || null;
+    }
+
+    function init() {
+      const rc = exports.rebal_wasm_init();
+      selectedBlock = null;
+      document.getElementById('btn-free').disabled = true;
+      document.getElementById('btn-realloc').disabled = true;
+      log(`init() -> ${errorName(rc)}`, rc === 0 ? 'log-success' : 'log-error');
+      render();
+    }
+
+    function allocate() {
+      const size = parseInt(document.getElementById('alloc-size').value, 10);
+      if (!size || size <= 0) {
+        log('Invalid allocation size', 'log-error');
+        return;
+      }
+      const ptr = exports.rebal_wasm_alloc(size);
+      if (ptr === 0) {
+        log(`alloc(${size}) -> OUT_OF_MEMORY`, 'log-error');
+      } else {
+        const block = findBlockByPointer(ptr);
+        const actual = block ? block.size - BLOCK_HEADER_SIZE : size;
+        log(`alloc(${size}) -> ptr ${ptr} (payload ${actual} B)`, 'log-success');
+        selectBlock(block);
+      }
+      render();
+    }
+
+    function freeSelected() {
+      if (!selectedBlock) return;
+      const ptr = getPointerFromBlock(selectedBlock);
+      const rc = exports.rebal_wasm_free(ptr);
+      log(`free(${ptr}) -> ${errorName(rc)}`, rc === 0 ? 'log-success' : 'log-error');
+      selectedBlock = null;
+      document.getElementById('btn-free').disabled = true;
+      document.getElementById('btn-realloc').disabled = true;
+      render();
+    }
+
+    function reallocSelected() {
+      if (!selectedBlock) return;
+      const newSize = parseInt(document.getElementById('realloc-size').value, 10);
+      if (!newSize || newSize <= 0) {
+        log('Invalid reallocation size', 'log-error');
+        return;
+      }
+      const ptr = getPointerFromBlock(selectedBlock);
+      const newPtr = exports.rebal_wasm_realloc(ptr, newSize);
+      if (newPtr === 0) {
+        log(`realloc(${ptr}, ${newSize}) -> OUT_OF_MEMORY`, 'log-error');
+      } else {
+        const block = findBlockByPointer(newPtr);
+        const actual = block ? block.size - BLOCK_HEADER_SIZE : newSize;
+        log(`realloc(${ptr}, ${newSize}) -> ptr ${newPtr} (payload ${actual} B)`, 'log-success');
+        selectBlock(block);
+      }
+      render();
+    }
+
+    function validate() {
+      const rc = exports.rebal_wasm_validate();
+      log(`validate() -> ${errorName(rc)}`, rc === 0 ? 'log-success' : 'log-error');
+    }
+
+    async function stressTest() {
+      const allocations = [];
+      const count = 60;
+      for (let i = 0; i < count; i++) {
+        const size = Math.floor(Math.random() * 400) + 8;
+        const ptr = exports.rebal_wasm_alloc(size);
+        if (ptr !== 0) allocations.push(ptr);
+        if (allocations.length > 0 && Math.random() < 0.35) {
+          const idx = Math.floor(Math.random() * allocations.length);
+          const ptr = allocations[idx];
+          const rc = exports.rebal_wasm_free(ptr);
+          if (rc !== 0) log(`stress free(${ptr}) -> ${errorName(rc)}`, 'log-error');
+          allocations.splice(idx, 1);
+        }
+      }
+      selectedBlock = null;
+      document.getElementById('btn-free').disabled = true;
+      document.getElementById('btn-realloc').disabled = true;
+      const rc = exports.rebal_wasm_validate();
+      log(`Stress test done: ${allocations.length} live allocations. validate() -> ${errorName(rc)}`, rc === 0 ? 'log-success' : 'log-error');
+      render();
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      const header = readArenaHeader();
+      if (header.magic !== REBAL_MAGIC) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const b = blockAtVisualX(x);
+      if (b) {
+        const payload = heapBase + b.offset + BLOCK_HEADER_SIZE;
+        blockInfo.textContent = `Block at offset ${b.offset}, size ${b.size} B, payload ${b.size - BLOCK_HEADER_SIZE} B, ptr ${payload}, ${b.isFree ? 'FREE' : 'ALLOC'}`;
+      } else {
+        const ratio = x / canvas.width;
+        const offset = Math.floor(ratio * header.capacity);
+        blockInfo.textContent = `Offset ${offset} (capacity ${header.capacity} B)`;
+      }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      if (selectedBlock) {
+        selectBlock(selectedBlock);
+      } else {
+        blockInfo.textContent = 'Hover or click a block for details';
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      const header = readArenaHeader();
+      if (header.magic !== REBAL_MAGIC) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const b = blockAtVisualX(x);
+      if (b) selectBlock(b);
+    });
+
+    document.getElementById('btn-init').addEventListener('click', init);
+    document.getElementById('btn-alloc').addEventListener('click', allocate);
+    document.getElementById('btn-free').addEventListener('click', freeSelected);
+    document.getElementById('btn-realloc').addEventListener('click', reallocSelected);
+    document.getElementById('btn-validate').addEventListener('click', validate);
+    document.getElementById('btn-stress').addEventListener('click', stressTest);
+
+    document.getElementById('alloc-size').addEventListener('keydown', (e) => { if (e.key === 'Enter') allocate(); });
+    document.getElementById('realloc-size').addEventListener('keydown', (e) => { if (e.key === 'Enter') reallocSelected(); });
+
+    loadWasm().then(() => {
+      init();
+    });
+  </script>
+</body>
+</html>
