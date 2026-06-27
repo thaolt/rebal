@@ -4,38 +4,33 @@
 
 
 void *rebal_memset(void *dst, int v, size_t n) {
-#ifdef BUILDING_WASM
-    return __builtin_memset(dst, v, n);
-#else
     unsigned char *p = dst;
     while (n--) *p++ = (unsigned char)v;
     return dst;
-#endif
 }
 
 void *rebal_memcpy(void *dest, const void *src, size_t n) {
-#ifdef BUILDING_WASM
-    return __builtin_memcpy(dest, src, n);
-#else
     char *d = (char *)dest;
     const char *s = (const char *)src;
     for (size_t i = 0; i < n; i++) {
         d[i] = s[i];
     }
     return dest;
-#endif
 }
 
 
 /* In freestanding/WASM builds, provide memset/memcpy for the linker.
- * In hosted builds, defining these would clash with libc (UB). */
+ * In hosted builds, defining these would clash with libc (UB).
+ *
+ * Mark them noinline so the compiler cannot optimize the loop body
+ * back into a recursive call to memset/memcpy. */
 #ifdef BUILDING_WASM
-__attribute__((used))
+__attribute__((used, noinline))
 void *memset(void *dst, int v, size_t n) {
     return rebal_memset(dst, v, n);
 }
 
-__attribute__((used))
+__attribute__((used, noinline))
 void *memcpy(void *dest, const void *src, size_t n) {
     return rebal_memcpy(dest, src, n);
 }

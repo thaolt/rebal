@@ -192,6 +192,43 @@ cd build
 ./debug_rebal
 ```
 
+## WASM Demo
+
+A self-contained, interactive demo of `rebal` running as a WebAssembly module is provided in the `wasm/` directory. It is built with `clang --target=wasm32` and `wasm-ld`. The demo arena is capped at 10 KiB (WebAssembly memory is page-aligned, so the module uses one 64 KiB page).
+
+### Files
+
+- `wasm/rebal_wasm.c` — tiny wrapper that exports `rebal_init`, `rebal_alloc`, `rebal_free`, `rebal_realloc`, `rebal_validate`, and statistics functions.
+- `wasm/Makefile` — build tasks for the wasm32 target.
+- `wasm/index.html` — interactive visualizer (canvas memory map, controls, statistics, operation log).
+
+### Build
+
+Requires the LLVM toolchain and LLD from Homebrew:
+
+```sh
+brew install llvm lld
+```
+
+Then build the wasm module:
+
+```sh
+cd wasm
+make
+```
+
+This produces `wasm/rebal.wasm`.
+
+### Run the demo
+
+```sh
+make serve
+```
+
+Then open http://localhost:8080/index.html in a browser.
+
+The page lets you initialize the allocator, allocate/free/reallocate blocks, run validation, and perform a stress test, while visualizing the physical blocks and live statistics directly from the WebAssembly linear memory.
+
 ## Recent Improvements
 
 The allocator has been significantly improved with:

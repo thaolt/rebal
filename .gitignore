@@ -2,3 +2,4 @@ build/
 .qtcreator/
 *.pro.user
 CMakeLists.txt.user
+wasm/rebal.wasm
