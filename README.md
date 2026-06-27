@@ -3,6 +3,9 @@ rebal: Red-black allocator
 
 A simple allocator with a Red-Black balanced free tree. Primarily designed for use in WebAssembly (WASM) modules.
 
+> **Disclaimer**:
+> This repository has been completely vibe-coded for entertainment purposes only, DO NOT use it in any production environment.
+
 Features:
  * No external heap allocation inside allocator
  * Uses offsets relative to buffer base
